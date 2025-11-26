@@ -44,7 +44,7 @@ func server(c *cli.Context) error {
 	}
 
 	// configure listener
-	listener, err := quic.ListenAddr(c.String("bind"), config, nil)
+	listener, err := quic.ListenAddr(c.String("bind"), config, &quic.Config{MaxIdleTimeout: c.Duration("idletimeout")})
 	if err != nil {
 		return err
 	}

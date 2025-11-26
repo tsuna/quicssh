@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"runtime/debug"
+	"time"
 
 	cli "github.com/urfave/cli/v2"
 )
@@ -21,6 +22,7 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "bind", Value: "localhost:4242", Usage: "bind address"},
 					&cli.StringFlag{Name: "sshdaddr", Value: "localhost:22", Usage: "target address of sshd"},
+					&cli.DurationFlag{Name: "idletimeout", Value: 30 * time.Second, Usage: "idle timeout"},
 				},
 				Action: server,
 			},
@@ -29,6 +31,7 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "addr", Value: "localhost:4242", Usage: "address of server"},
 					&cli.StringFlag{Name: "localaddr", Value: ":0", Usage: "source address of UDP packets"},
+					&cli.DurationFlag{Name: "idletimeout", Value: 30 * time.Second, Usage: "idle timeout"},
 				},
 				Action: client,
 			},
