@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/tls"
@@ -10,11 +11,9 @@ import (
 	"log"
 	"math/big"
 	"net"
-	"sync"
 
 	quic "github.com/quic-go/quic-go"
 	cli "github.com/urfave/cli/v2"
-	"golang.org/x/net/context"
 )
 
 func server(c *cli.Context) error {
@@ -39,13 +38,18 @@ func server(c *cli.Context) error {
 		NextProtos:   []string{"quicssh"},
 	}
 
+	raddr, err := net.ResolveTCPAddr("tcp", c.String("sshdaddr"))
+	if err != nil {
+		return err
+	}
+
 	// configure listener
 	listener, err := quic.ListenAddr(c.String("bind"), config, nil)
 	if err != nil {
 		return err
 	}
 	defer listener.Close()
-	log.Printf("Listening at %q...", c.String("bind"))
+	log.Printf("Listening at %q... (sshd addr: %q)", c.String("bind"), c.String("sshdaddr"))
 
 	ctx := context.Background()
 	for {
@@ -56,57 +60,50 @@ func server(c *cli.Context) error {
 			continue
 		}
 
-		go serverSessionHandler(ctx, session)
+		go serverSessionHandler(ctx, session, raddr)
 	}
 }
 
-func serverSessionHandler(ctx context.Context, session *quic.Conn) {
-	log.Printf("hanling session...")
+func serverSessionHandler(ctx context.Context, session *quic.Conn, raddr *net.TCPAddr) {
+	log.Printf("Hanling session...")
 	defer func() {
 		if err := session.CloseWithError(0, "close"); err != nil {
-			log.Printf("session close error: %v", err)
+			log.Printf("Session close error: %v", err)
 		}
 	}()
 	for {
 		stream, err := session.AcceptStream(ctx)
 		if err != nil {
-			log.Printf("session error: %v", err)
+			log.Printf("Session error: %v", err)
 			break
 		}
-		go serverStreamHandler(ctx, stream)
+		go serverStreamHandler(ctx, stream, raddr)
 	}
 }
 
-func serverStreamHandler(ctx context.Context, conn io.ReadWriteCloser) {
-	log.Printf("handling stream...")
+func serverStreamHandler(ctx context.Context, conn io.ReadWriteCloser, raddr *net.TCPAddr) {
+	log.Printf("Handling stream...")
 	defer conn.Close()
 
-	rConn, err := net.DialTCP("tcp", nil, &net.TCPAddr{IP: net.IP{127, 0, 0, 1}, Port: 22})
+	rConn, err := net.DialTCP("tcp", nil, raddr)
 	if err != nil {
-		log.Printf("dial error: %v", err)
+		log.Printf("Dial error: %v", err)
 		return
 	}
 	defer rConn.Close()
 
 	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
 
-	var wg sync.WaitGroup
-	wg.Add(2)
-	c1 := readAndWrite(ctx, conn, rConn, &wg)
-	c2 := readAndWrite(ctx, rConn, conn, &wg)
+	c1 := readAndWrite(ctx, conn, rConn)
+	c2 := readAndWrite(ctx, rConn, conn)
 	select {
 	case err = <-c1:
-		if err != nil {
-			log.Printf("readAndWrite error on c1: %v", err)
-			return
-		}
 	case err = <-c2:
-		if err != nil {
-			log.Printf("readAndWrite error on c2: %v", err)
-			return
-		}
 	}
-	cancel()
-	wg.Wait()
+	if err != nil {
+		log.Printf("readAndWrite error: %v", err)
+		return
+	}
 	log.Printf("Piping finished")
 }

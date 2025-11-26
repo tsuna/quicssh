@@ -1,26 +1,41 @@
 package main
 
 import (
+	"context"
 	"crypto/tls"
 	"log"
+	"net"
 	"os"
-	"sync"
+	"time"
 
 	quic "github.com/quic-go/quic-go"
 	cli "github.com/urfave/cli/v2"
-	"golang.org/x/net/context"
 )
 
 func client(c *cli.Context) error {
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	config := &tls.Config{
 		InsecureSkipVerify: true,
 		NextProtos:         []string{"quicssh"},
 	}
 
-	log.Printf("Dialing %q...", c.String("addr"))
-	session, err := quic.DialAddr(ctx, c.String("addr"), config, nil)
+	udpAddr, err := net.ResolveUDPAddr("udp", c.String("addr"))
+	if err != nil {
+		return err
+	}
+	srcAddr, err := net.ResolveUDPAddr("udp", c.String("localaddr"))
+	if err != nil {
+		return err
+	}
+
+	log.Printf("Dialing %q->%q...", srcAddr.String(), udpAddr.String())
+	conn, err := net.ListenUDP("udp", srcAddr)
+	if err != nil {
+		return err
+	}
+	session, err := quic.Dial(ctx, conn, udpAddr, config, &quic.Config{MaxIdleTimeout: 10 * time.Second, KeepAlivePeriod: 5 * time.Second})
 	if err != nil {
 		return err
 	}
@@ -35,23 +50,17 @@ func client(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
+	defer stream.Close()
 
 	log.Printf("Piping stream with QUIC...")
-	var wg sync.WaitGroup
-	wg.Add(3)
-	c1 := readAndWrite(ctx, stream, os.Stdout, &wg)
-	c2 := readAndWrite(ctx, os.Stdin, stream, &wg)
+	c1 := readAndWrite(ctx, stream, os.Stdout)
+	c2 := readAndWrite(ctx, os.Stdin, stream)
 	select {
 	case err = <-c1:
-		if err != nil {
-			return err
-		}
 	case err = <-c2:
-		if err != nil {
-			return err
-		}
 	}
-	cancel()
-	wg.Wait()
+	if err != nil {
+		return err
+	}
 	return nil
 }
