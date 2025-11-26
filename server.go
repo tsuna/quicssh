@@ -212,6 +212,8 @@ func serverStreamHandler(ctx context.Context, conn io.ReadWriteCloser, raddr *ne
 		return
 	}
 	defer rConn.Close()
+	// Disable Nagle's algorithm for lower latency on interactive SSH traffic
+	rConn.SetNoDelay(true)
 
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
