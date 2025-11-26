@@ -65,7 +65,7 @@ func server(c *cli.Context) error {
 }
 
 func serverSessionHandler(ctx context.Context, session *quic.Conn, raddr *net.TCPAddr) {
-	log.Printf("Hanling session...")
+	log.Printf("Handling session...")
 	defer func() {
 		if err := session.CloseWithError(0, "close"); err != nil {
 			log.Printf("Session close error: %v", err)
