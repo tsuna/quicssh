@@ -156,8 +156,16 @@ func server(c *cli.Context) error {
 		return err
 	}
 
-	// configure listener
-	listener, err := quic.ListenAddr(c.String("bind"), config, &quic.Config{MaxIdleTimeout: c.Duration("idletimeout")})
+	// configure listener with moderate flow control settings
+	quicConfig := &quic.Config{
+		MaxIdleTimeout: c.Duration("idletimeout"),
+		// Moderate flow control windows: balance between interactive and bulk transfers
+		InitialStreamReceiveWindow:     2 * 1024 * 1024,  // 2 MB (default: 512 KB)
+		MaxStreamReceiveWindow:         16 * 1024 * 1024, // 16 MB (default: 6 MB)
+		InitialConnectionReceiveWindow: 2 * 1024 * 1024,  // 2 MB (default: 512 KB)
+		MaxConnectionReceiveWindow:     32 * 1024 * 1024, // 32 MB (default: 15 MB)
+	}
+	listener, err := quic.ListenAddr(c.String("bind"), config, quicConfig)
 	if err != nil {
 		return err
 	}

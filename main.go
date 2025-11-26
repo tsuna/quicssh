@@ -1,15 +1,23 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"io"
 	"os"
 	"runtime/debug"
+	"sync"
 	"time"
 
 	cli "github.com/urfave/cli/v2"
 )
+
+// Buffer pool for readAndWrite to reduce GC pressure
+var bufPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 64*1024)
+		return &buf
+	},
+}
 
 func main() {
 	build, _ := debug.ReadBuildInfo()
@@ -53,26 +61,35 @@ func readAndWrite(ctx context.Context, r io.Reader, w io.Writer) <-chan error {
 	go func() {
 		defer close(c)
 
-		buff := make([]byte, 8*1024)
+		// Get buffer from pool to reduce GC pressure
+		bufp := bufPool.Get().(*[]byte)
+		buf := *bufp
+		defer bufPool.Put(bufp)
 
 		for {
-			select {
-			case <-ctx.Done():
-				c <- ctx.Err()
-				return
-			default:
-				nr, err := r.Read(buff)
-				if err != nil {
-					c <- err
+			nr, err := r.Read(buf)
+			if nr > 0 {
+				// Write directly instead of using io.Copy with bytes.NewReader
+				// which was creating unnecessary allocations and copying
+				nw, werr := w.Write(buf[:nr])
+				if werr != nil {
+					c <- werr
 					return
 				}
-				if nr > 0 {
-					_, err := io.Copy(w, bytes.NewReader(buff[:nr]))
-					if err != nil {
-						c <- err
-						return
-					}
+				if nw != nr {
+					c <- io.ErrShortWrite
+					return
 				}
+			}
+			if err != nil {
+				// Check for context cancellation
+				select {
+				case <-ctx.Done():
+					c <- ctx.Err()
+				default:
+					c <- err
+				}
+				return
 			}
 		}
 	}()
