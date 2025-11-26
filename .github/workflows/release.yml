@@ -1,0 +1,50 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build Release Binaries
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+
+      - name: Get version
+        id: version
+        run: echo "VERSION=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+
+      - name: Build binaries
+        run: |
+          # Build for macOS ARM64
+          GOOS=darwin GOARCH=arm64 go build -o quicssh-darwin-arm64 -ldflags="-s -w"
+          
+          # Build for Linux AMD64
+          GOOS=linux GOARCH=amd64 go build -o quicssh-linux-amd64 -ldflags="-s -w"
+          
+          # Create checksums
+          sha256sum quicssh-darwin-arm64 > checksums.txt
+          sha256sum quicssh-linux-amd64 >> checksums.txt
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v1
+        with:
+          files: |
+            quicssh-darwin-arm64
+            quicssh-linux-amd64
+            checksums.txt
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
