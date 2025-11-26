@@ -6,11 +6,14 @@ This fork includes:
 
 -   Updated dependencies with latest security patches
 -   Configurable idle timeout for flaky connections
--   TLS certificate verification support
+-   TLS certificate verification support and reloading certs at runtime
 -   NAT punching support
 -   Custom SSH daemon address
 
 Based on [moul/quicssh](https://github.com/moul/quicssh) with improvements from [PR #178](https://github.com/moul/quicssh/pull/178)
+
+This fork is intended to be used directly because upstream seems to have been
+abandoned and is unmaintained.
 
 ## Architecture
 
