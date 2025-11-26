@@ -2,13 +2,15 @@
 
 > :smile: **quicssh** is a QUIC proxy that allows to use QUIC to connect to an SSH server without needing to patch the client or the server.
 
-[![CircleCI](https://circleci.com/gh/moul/quicssh.svg?style=shield)](https://circleci.com/gh/moul/quicssh)
-[![GoDoc](https://godoc.org/moul.io/quicssh?status.svg)](https://godoc.org/moul.io/quicssh)
-[![License](https://img.shields.io/github/license/moul/quicssh.svg)](https://github.com/moul/quicssh/blob/master/LICENSE)
-[![GitHub release](https://img.shields.io/github/release/moul/quicssh.svg)](https://github.com/moul/quicssh/releases)
-[![Go Report Card](https://goreportcard.com/badge/moul.io/quicssh)](https://goreportcard.com/report/moul.io/quicssh)
-[![Docker Metrics](https://images.microbadger.com/badges/image/moul/quicssh.svg)](https://microbadger.com/images/moul/quicssh)
-[![Made by Manfred Touron](https://img.shields.io/badge/made%20by-Manfred%20Touron-blue.svg?style=flat)](https://manfred.life/)
+This fork includes:
+
+-   Updated dependencies with latest security patches
+-   Configurable idle timeout for flaky connections
+-   TLS certificate verification support
+-   NAT punching support
+-   Custom SSH daemon address
+
+Based on [moul/quicssh](https://github.com/moul/quicssh) with improvements from [PR #178](https://github.com/moul/quicssh/pull/178)
 
 ## Architecture
 
@@ -45,46 +47,67 @@ SSH Connection proxified with QUIC
 └───────────────────────────────────────┘             └───────────────────────┘
 ```
 
+## Install
+
+```bash
+# Install latest version
+go install github.com/tsuna/quicssh@latest
+
+# Install specific version
+go install github.com/tsuna/quicssh@v1.1.0
+```
+
+Or download pre-built binaries from [releases](https://github.com/tsuna/quicssh/releases).
+
 ## Usage
 
-```console
-$ quicssh -h
-NAME:
-   quicssh - Client and server parts to proxy SSH (TCP) over UDP using QUIC transport
+### Quick Start (Insecure Mode)
 
-USAGE:
-   quicssh [global options] command [command options]
+For testing or trusted networks only:
 
-VERSION:
-   v0.0.0-20230730133128-1c771b69d1a7+dirty
+```bash
+# On the server
+quicssh server --bind 0.0.0.0:4242 --insecure
 
-COMMANDS:
-   server
-   client
-   help, h  Shows a list of commands or help for one command
-
-GLOBAL OPTIONS:
-   --help, -h     show help
-   --version, -v  print the version
+# On the client
+ssh -o ProxyCommand="quicssh client --addr %h:4242 --insecure" user@hostname
 ```
 
-### Client
+⚠️ **Warning**: Insecure mode skips TLS certificate verification and is vulnerable to man-in-the-middle attacks. Only use on trusted networks!
 
-```console
-$ quicssh client -h
-NAME:
-   quicssh client
+### Secure Mode (Recommended)
 
-USAGE:
-   quicssh client [command options]
+Generate a certificate:
 
-OPTIONS:
-   --addr value       address of server (default: "localhost:4242")
-   --localaddr value  source address of UDP packets (default: ":0")
-   --help, -h         show help
+```bash
+./generate-cert.sh server.crt server.key
 ```
 
-### Server
+Or use your own certificate (e.g., from Let's Encrypt).
+
+Start the server with the certificate:
+
+```bash
+quicssh server --bind 0.0.0.0:4242 --cert server.crt --key server.key
+```
+
+Connect with certificate verification:
+
+```bash
+# Copy server.crt to the client machine, then:
+ssh -o ProxyCommand="quicssh client --addr %h:4242 --servercert server.crt" user@hostname
+```
+
+Or add to `~/.ssh/config`:
+
+```
+Host myserver
+    ProxyCommand quicssh client --addr %h:4242 --servercert /path/to/server.crt
+```
+
+### Advanced Options
+
+#### Server
 
 ```console
 $ quicssh server -h
@@ -95,24 +118,100 @@ USAGE:
    quicssh server [command options]
 
 OPTIONS:
-   --bind value      bind address (default: "localhost:4242")
-   --sshdaddr value  target address of sshd (default: "localhost:22")
-   --help, -h        show help
+   --bind value         bind address (default: "localhost:4242")
+   --sshdaddr value     target address of sshd (default: "localhost:22")
+   --idletimeout value  idle timeout (default: 30s)
+   --insecure           generate and use self-signed certificate (insecure) (default: false)
+   --cert value         path to TLS certificate file
+   --key value          path to TLS private key file
+   --help, -h           show help
 ```
 
-## Install
+#### Client
 
 ```console
-$ go get -u moul.io/quicssh
+$ quicssh client -h
+NAME:
+   quicssh client
+
+USAGE:
+   quicssh client [command options]
+
+OPTIONS:
+   --addr value              address of server (default: "localhost:4242")
+   --localaddr value         source address of UDP packets (default: ":0")
+   --idletimeout value       idle timeout (default: 30s)
+   --insecure                skip TLS certificate verification (insecure) (default: false)
+   --servercert value        path to server's TLS certificate for verification
+   --skip-verify-hostname    skip hostname verification (still verifies certificate) (default: false)
+   --help, -h                show help
 ```
+
+### Examples
+
+**Increase timeout for flaky VPN connections:**
+
+```bash
+# Server
+quicssh server --bind 0.0.0.0:4242 --cert server.crt --key server.key --idletimeout 5m
+
+# Client
+ssh -o ProxyCommand="quicssh client --addr %h:4242 --servercert server.crt --idletimeout 5m" user@hostname
+```
+
+**NAT punching (specify source address):**
+
+```bash
+ssh -o ProxyCommand="quicssh client --addr %h:4242 --localaddr 192.168.1.100:0 --servercert server.crt" user@hostname
+```
+
+**Custom SSH daemon port:**
+
+```bash
+quicssh server --bind 0.0.0.0:4242 --sshdaddr localhost:2222 --cert server.crt --key server.key
+```
+
+**Certificate pinning without hostname verification (for proxies/VPNs):**
+
+When connecting through a proxy or VPN that changes the server's IP address,
+you can use `--skip-verify-hostname` to verify the certificate itself while
+ignoring hostname/IP mismatches:
+
+```bash
+# Server is behind a proxy that assigns dynamic IPs
+ssh -o ProxyCommand="quicssh client --addr 100.64.1.1:4242 --servercert server.crt --skip-verify-hostname" user@hostname
+```
+
+This still provides MITM protection through certificate pinning (the
+certificate must match exactly), but doesn't verify that the hostname/IP
+matches the certificate's SAN field.
+
+## Security Considerations
+
+-   **TLS Encryption**: QUIC uses TLS 1.3 for encryption. Always use
+    `--cert`/`--key` on the server and `--servercert` on the client for
+    production.
+-   **SSH Layer**: SSH provides its own encryption and authentication on top of
+    QUIC, so you get defense in depth.
+-   **Insecure Mode**: Only use `--insecure` for testing or on fully trusted
+    networks. It's vulnerable to MITM attacks.
+-   **Certificate Verification**: The `--servercert` flag pins the server's
+    certificate, preventing MITM attacks even if an attacker has a valid
+    certificate.
+-   **Skip Hostname Verification**: The `--skip-verify-hostname` flag is useful
+    when connecting through proxies or VPNs that change the server's IP
+    address. It still verifies the certificate itself (certificate pinning),
+    but skips checking if the hostname/IP matches the certificate's SAN field.
+    This provides MITM protection while working with dynamic IPs.
 
 ## Resources
 
+-   Original project: https://github.com/moul/quicssh
 -   https://korben.info/booster-ssh-quic-quicssh.html
-
-[![Star History Chart](https://api.star-history.com/svg?repos=moul/quicssh&type=Date)](https://star-history.com/#moul/quicssh&Date)
 
 ## License
 
-© 2019-2023 [Manfred Touron](https://manfred.life) -
+© 2019-2023 [Manfred Touron](https://manfred.life) - Original work
+© 2025 [Benoît Sigoure](https://github.com/tsuna) - This fork
+
 [Apache-2.0 License](https://github.com/moul/quicssh/blob/master/LICENSE)

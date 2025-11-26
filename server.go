@@ -7,6 +7,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
@@ -17,22 +18,43 @@ import (
 )
 
 func server(c *cli.Context) error {
-	// generate TLS certificate
-	key, err := rsa.GenerateKey(rand.Reader, 1024)
-	if err != nil {
-		return err
+	var tlsCert tls.Certificate
+	var err error
+
+	// Determine how to load the TLS certificate
+	certFile := c.String("cert")
+	keyFile := c.String("key")
+	insecure := c.Bool("insecure")
+
+	if certFile != "" && keyFile != "" {
+		// Load certificate from files
+		log.Printf("Loading TLS certificate from %q and key from %q", certFile, keyFile)
+		tlsCert, err = tls.LoadX509KeyPair(certFile, keyFile)
+		if err != nil {
+			return fmt.Errorf("failed to load certificate: %w", err)
+		}
+	} else if insecure {
+		// Generate self-signed certificate
+		log.Printf("WARNING: Generating self-signed certificate (insecure mode)")
+		key, err := rsa.GenerateKey(rand.Reader, 2048)
+		if err != nil {
+			return err
+		}
+		template := x509.Certificate{SerialNumber: big.NewInt(1)}
+		certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
+		if err != nil {
+			return err
+		}
+		keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+		certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
+		tlsCert, err = tls.X509KeyPair(certPEM, keyPEM)
+		if err != nil {
+			return err
+		}
+	} else {
+		return fmt.Errorf("must specify either --cert and --key flags, or use --insecure flag")
 	}
-	template := x509.Certificate{SerialNumber: big.NewInt(1)}
-	certDER, err := x509.CreateCertificate(rand.Reader, &template, &template, &key.PublicKey, key)
-	if err != nil {
-		return err
-	}
-	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
-	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certDER})
-	tlsCert, err := tls.X509KeyPair(certPEM, keyPEM)
-	if err != nil {
-		return err
-	}
+
 	config := &tls.Config{
 		Certificates: []tls.Certificate{tlsCert},
 		NextProtos:   []string{"quicssh"},
