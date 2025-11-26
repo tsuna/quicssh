@@ -1,4 +1,4 @@
-module moul.io/quicssh
+module github.com/tsuna/quicssh
 
 go 1.25
 
