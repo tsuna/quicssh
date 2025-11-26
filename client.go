@@ -18,6 +18,13 @@ func client(c *cli.Context) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
+	verbose := c.Bool("verbose")
+	logf := func(format string, v ...interface{}) {
+		if verbose {
+			log.Printf(format, v...)
+		}
+	}
+
 	// Configure TLS based on flags
 	serverCertFile := c.String("servercert")
 	insecure := c.Bool("insecure")
@@ -29,7 +36,7 @@ func client(c *cli.Context) error {
 
 	if serverCertFile != "" {
 		// Load and verify server certificate
-		log.Printf("Loading server certificate from %q for verification", serverCertFile)
+		logf("Loading server certificate from %q for verification", serverCertFile)
 		certPEM, err := os.ReadFile(serverCertFile)
 		if err != nil {
 			return fmt.Errorf("failed to read server certificate: %w", err)
@@ -83,7 +90,7 @@ func client(c *cli.Context) error {
 		return err
 	}
 
-	log.Printf("Dialing %q->%q...", srcAddr.String(), udpAddr.String())
+	logf("Dialing %q->%q...", srcAddr.String(), udpAddr.String())
 	conn, err := net.ListenUDP("udp", srcAddr)
 	if err != nil {
 		return err
@@ -107,14 +114,14 @@ func client(c *cli.Context) error {
 		}
 	}()
 
-	log.Printf("Opening stream sync...")
+	logf("Opening stream sync...")
 	stream, err := session.OpenStreamSync(ctx)
 	if err != nil {
 		return err
 	}
 	defer stream.Close()
 
-	log.Printf("Piping stream with QUIC...")
+	logf("Piping stream with QUIC...")
 	c1 := readAndWrite(ctx, stream, os.Stdout)
 	c2 := readAndWrite(ctx, os.Stdin, stream)
 	select {
