@@ -5,6 +5,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"os"
@@ -22,6 +23,21 @@ func client(c *cli.Context) error {
 	logf := func(format string, v ...interface{}) {
 		if verbose {
 			log.Printf(format, v...)
+		}
+	}
+
+	// Check if we should bypass QUIC for bulk transfers (scp, rsync, sftp)
+	if !c.Bool("no-passthrough") {
+		if isBulk, cmd := isBulkTransferParent(); isBulk {
+			sshPort := c.Int("ssh-port")
+			// Extract hostname from addr (strip port)
+			addr := c.String("addr")
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				host = addr // assume no port
+			}
+			logf("Detected %s, using direct SSH connection to %s:%d", cmd, host, sshPort)
+			return tcpPassthrough(ctx, host, sshPort)
 		}
 	}
 
@@ -132,4 +148,39 @@ func client(c *cli.Context) error {
 		return err
 	}
 	return nil
+}
+
+// tcpPassthrough connects directly to SSH over TCP, bypassing QUIC.
+// Used when bulk transfer tools (scp, rsync, sftp) are detected.
+// Uses io.Copy which automatically uses splice() on Linux when copying
+// between the TCP socket and stdin/stdout pipes.
+func tcpPassthrough(ctx context.Context, host string, port int) error {
+	addr := fmt.Sprintf("%s:%d", host, port)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("failed to connect to %s: %w", addr, err)
+	}
+	defer conn.Close()
+
+	// Set TCP_NODELAY for lower latency
+	if tcpConn, ok := conn.(*net.TCPConn); ok {
+		tcpConn.SetNoDelay(true)
+	}
+
+	errCh := make(chan error, 2)
+
+	// conn -> stdout (Go uses splice on Linux when dst is a pipe)
+	go func() {
+		_, err := io.Copy(os.Stdout, conn)
+		errCh <- err
+	}()
+
+	// stdin -> conn (Go uses splice on Linux when src is a pipe)
+	go func() {
+		_, err := io.Copy(conn, os.Stdin)
+		errCh <- err
+	}()
+
+	// Return on first completion (EOF or error)
+	return <-errCh
 }

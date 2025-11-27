@@ -47,6 +47,8 @@ func main() {
 					&cli.StringFlag{Name: "servercert", Value: "", Usage: "path to server's TLS certificate for verification"},
 					&cli.BoolFlag{Name: "skip-verify-hostname", Value: false, Usage: "skip hostname verification (still verifies certificate)"},
 					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Value: false, Usage: "enable verbose logging"},
+					&cli.IntFlag{Name: "ssh-port", Value: 22, Usage: "SSH port for direct connection when bypassing QUIC"},
+					&cli.BoolFlag{Name: "no-passthrough", Value: false, Usage: "disable automatic passthrough for bulk transfers (scp, rsync, sftp)"},
 				},
 				Action: client,
 			},
