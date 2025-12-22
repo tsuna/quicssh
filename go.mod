@@ -3,7 +3,7 @@ module github.com/tsuna/quicssh
 go 1.25
 
 require (
-	github.com/quic-go/quic-go v0.57.1
+	github.com/quic-go/quic-go v0.58.0
 	github.com/urfave/cli/v2 v2.27.7
 )
 
