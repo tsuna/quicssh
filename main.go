@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	quic "github.com/quic-go/quic-go"
 	cli "github.com/urfave/cli/v2"
 )
 
@@ -17,6 +18,33 @@ var bufPool = sync.Pool{
 		buf := make([]byte, 64*1024)
 		return &buf
 	},
+}
+
+// keepAliveForIdleTimeout returns an appropriate keep-alive period for the given
+// idle timeout. The keep-alive is scaled to 1/60th of the idle timeout, clamped
+// between 5s (responsive for interactive sessions) and 30s (NAT-friendly).
+func keepAliveForIdleTimeout(idleTimeout time.Duration) time.Duration {
+	keepAlive := idleTimeout / 60
+	if keepAlive < 5*time.Second {
+		keepAlive = 5 * time.Second
+	}
+	if keepAlive > 30*time.Second {
+		keepAlive = 30 * time.Second
+	}
+	return keepAlive
+}
+
+// newQUICConfig returns a QUIC config with standard settings for the given idle timeout.
+func newQUICConfig(idleTimeout time.Duration) *quic.Config {
+	return &quic.Config{
+		MaxIdleTimeout:  idleTimeout,
+		KeepAlivePeriod: keepAliveForIdleTimeout(idleTimeout),
+		// Moderate flow control windows: balance between interactive and bulk transfers
+		InitialStreamReceiveWindow:     2 * 1024 * 1024,  // 2 MB (default: 512 KB)
+		MaxStreamReceiveWindow:         16 * 1024 * 1024, // 16 MB (default: 6 MB)
+		InitialConnectionReceiveWindow: 2 * 1024 * 1024,  // 2 MB (default: 512 KB)
+		MaxConnectionReceiveWindow:     32 * 1024 * 1024, // 32 MB (default: 15 MB)
+	}
 }
 
 func main() {

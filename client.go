@@ -9,7 +9,6 @@ import (
 	"log"
 	"net"
 	"os"
-	"time"
 
 	quic "github.com/quic-go/quic-go"
 	cli "github.com/urfave/cli/v2"
@@ -111,16 +110,7 @@ func client(c *cli.Context) error {
 	if err != nil {
 		return err
 	}
-	quicConfig := &quic.Config{
-		MaxIdleTimeout:  c.Duration("idletimeout"),
-		KeepAlivePeriod: 5 * time.Second,
-		// Moderate flow control windows: balance between interactive and bulk transfers
-		InitialStreamReceiveWindow:     2 * 1024 * 1024,  // 2 MB (default: 512 KB)
-		MaxStreamReceiveWindow:         16 * 1024 * 1024, // 16 MB (default: 6 MB)
-		InitialConnectionReceiveWindow: 2 * 1024 * 1024,  // 2 MB (default: 512 KB)
-		MaxConnectionReceiveWindow:     32 * 1024 * 1024, // 32 MB (default: 15 MB)
-	}
-	session, err := quic.Dial(ctx, conn, udpAddr, config, quicConfig)
+	session, err := quic.Dial(ctx, conn, udpAddr, config, newQUICConfig(c.Duration("idletimeout")))
 	if err != nil {
 		return err
 	}
