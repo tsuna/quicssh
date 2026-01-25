@@ -1,12 +1,19 @@
 package main
 
 import (
-"bytes"
-"context"
-"errors"
-"io"
-"testing"
+	"bytes"
+	"context"
+	"errors"
+	"io"
+	"testing"
+	"time"
 )
+
+// testLogf is a no-op logger for tests
+var testLogf = func(format string, v ...interface{}) {}
+
+// testIdleTimeout is a reasonable timeout for tests
+const testIdleTimeout = 5 * time.Second
 
 func TestReadAndWrite_BasicCopy(t *testing.T) {
 	ctx := context.Background()
@@ -14,7 +21,7 @@ func TestReadAndWrite_BasicCopy(t *testing.T) {
 	r := bytes.NewReader(data)
 	w := &bytes.Buffer{}
 
-	errCh := readAndWrite(ctx, r, w)
+	errCh := readAndWrite(ctx, r, w, testIdleTimeout, testLogf)
 	err := <-errCh
 
 	if err != io.EOF {
@@ -34,7 +41,7 @@ func TestReadAndWrite_LargeData(t *testing.T) {
 	r := bytes.NewReader(data)
 	w := &bytes.Buffer{}
 
-	errCh := readAndWrite(ctx, r, w)
+	errCh := readAndWrite(ctx, r, w, testIdleTimeout, testLogf)
 	err := <-errCh
 
 	if err != io.EOF {
@@ -50,7 +57,7 @@ func TestReadAndWrite_ContextCancellation(t *testing.T) {
 	r := &slowReader{data: make([]byte, 1024*1024), cancel: cancel}
 	w := &bytes.Buffer{}
 
-	errCh := readAndWrite(ctx, r, w)
+	errCh := readAndWrite(ctx, r, w, testIdleTimeout, testLogf)
 	err := <-errCh
 
 	if err != context.Canceled {
@@ -84,7 +91,7 @@ func TestReadAndWrite_WriteError(t *testing.T) {
 	expectedErr := errors.New("write failed")
 	w := &errorWriter{err: expectedErr}
 
-	errCh := readAndWrite(ctx, r, w)
+	errCh := readAndWrite(ctx, r, w, testIdleTimeout, testLogf)
 	err := <-errCh
 
 	if err != expectedErr {
@@ -106,7 +113,7 @@ func TestReadAndWrite_ShortWrite(t *testing.T) {
 	r := bytes.NewReader(data)
 	w := &shortWriter{}
 
-	errCh := readAndWrite(ctx, r, w)
+	errCh := readAndWrite(ctx, r, w, testIdleTimeout, testLogf)
 	err := <-errCh
 
 	if err != io.ErrShortWrite {
@@ -131,7 +138,7 @@ func BenchmarkReadAndWrite_1MB(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		r := bytes.NewReader(data)
 		w := &bytes.Buffer{}
-		errCh := readAndWrite(ctx, r, w)
+		errCh := readAndWrite(ctx, r, w, testIdleTimeout, testLogf)
 		<-errCh
 	}
 }
@@ -144,7 +151,7 @@ func BenchmarkReadAndWrite_10MB(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		r := bytes.NewReader(data)
 		w := &bytes.Buffer{}
-		errCh := readAndWrite(ctx, r, w)
+		errCh := readAndWrite(ctx, r, w, testIdleTimeout, testLogf)
 		<-errCh
 	}
 }
@@ -157,7 +164,7 @@ func BenchmarkReadAndWrite_50MB(b *testing.B) {
 	for i := 0; i < b.N; i++ {
 		r := bytes.NewReader(data)
 		w := &bytes.Buffer{}
-		errCh := readAndWrite(ctx, r, w)
+		errCh := readAndWrite(ctx, r, w, testIdleTimeout, testLogf)
 		<-errCh
 	}
 }

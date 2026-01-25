@@ -15,3 +15,6 @@ require (
 	golang.org/x/net v0.48.0 // indirect
 	golang.org/x/sys v0.39.0 // indirect
 )
+
+// Use fork with ACK hook API for QUIC-level acknowledgment tracking
+replace github.com/quic-go/quic-go => github.com/tsuna/quic-go v0.0.0-20260125192817-bd3abcfe933c
