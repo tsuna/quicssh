@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"runtime/debug"
@@ -35,15 +37,19 @@ func keepAliveForIdleTimeout(idleTimeout time.Duration) time.Duration {
 }
 
 // newQUICConfig returns a QUIC config with standard settings for the given idle timeout.
-func newQUICConfig(idleTimeout time.Duration) *quic.Config {
+func newQUICConfig(idleTimeout time.Duration, bufferSize int) *quic.Config {
+	// Use buffer size for stream window, and 2x for connection window
+	// to allow some headroom for multiple streams.
+	streamWindow := uint64(bufferSize)
+	connWindow := streamWindow * 2
 	return &quic.Config{
-		MaxIdleTimeout:  idleTimeout,
-		KeepAlivePeriod: keepAliveForIdleTimeout(idleTimeout),
-		// Moderate flow control windows: balance between interactive and bulk transfers
-		InitialStreamReceiveWindow:     2 * 1024 * 1024,  // 2 MB (default: 512 KB)
-		MaxStreamReceiveWindow:         16 * 1024 * 1024, // 16 MB (default: 6 MB)
-		InitialConnectionReceiveWindow: 2 * 1024 * 1024,  // 2 MB (default: 512 KB)
-		MaxConnectionReceiveWindow:     32 * 1024 * 1024, // 32 MB (default: 15 MB)
+		MaxIdleTimeout:                 idleTimeout,
+		KeepAlivePeriod:                keepAliveForIdleTimeout(idleTimeout),
+		InitialStreamReceiveWindow:     streamWindow / 8, // Start smaller, grow as needed
+		MaxStreamReceiveWindow:         streamWindow,
+		InitialConnectionReceiveWindow: connWindow / 8,
+		MaxConnectionReceiveWindow:     connWindow,
+		Allow0RTT:                      true, // Enable 0-RTT resumption for faster reconnects
 	}
 }
 
@@ -58,10 +64,15 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "bind", Value: "localhost:4242", Usage: "bind address"},
 					&cli.StringFlag{Name: "sshdaddr", Value: "localhost:22", Usage: "target address of sshd"},
-					&cli.DurationFlag{Name: "idletimeout", Value: 30 * time.Second, Usage: "idle timeout"},
+					&cli.DurationFlag{Name: "idle-timeout", Value: 30 * time.Second, Usage: "QUIC idle timeout (ignored when --session-layer is enabled)"},
 					&cli.BoolFlag{Name: "insecure", Value: false, Usage: "generate and use self-signed certificate (insecure)"},
 					&cli.StringFlag{Name: "cert", Value: "", Usage: "path to TLS certificate file"},
 					&cli.StringFlag{Name: "key", Value: "", Usage: "path to TLS private key file"},
+					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Value: false, Usage: "enable verbose logging"},
+					&cli.BoolFlag{Name: "session-layer", Value: false, Usage: "enable session layer for connection resilience"},
+					&cli.DurationFlag{Name: "session-timeout", Value: 30 * time.Minute, Usage: "session timeout for reconnection"},
+					&cli.IntFlag{Name: "max-sessions", Value: 1024, Usage: "maximum number of concurrent sessions (0 = unlimited)"},
+					&cli.IntFlag{Name: "buffer-size", Value: DefaultBufferSize, Usage: "maximum size of send buffer per session in bytes"},
 				},
 				Action: server,
 			},
@@ -70,24 +81,33 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "addr", Value: "localhost:4242", Usage: "address of server"},
 					&cli.StringFlag{Name: "localaddr", Value: ":0", Usage: "source address of UDP packets"},
-					&cli.DurationFlag{Name: "idletimeout", Value: 30 * time.Second, Usage: "idle timeout"},
+					&cli.DurationFlag{Name: "idle-timeout", Value: 30 * time.Second, Usage: "QUIC idle timeout (ignored when --session-layer is enabled)"},
 					&cli.BoolFlag{Name: "insecure", Value: false, Usage: "skip TLS certificate verification (insecure)"},
 					&cli.StringFlag{Name: "servercert", Value: "", Usage: "path to server's TLS certificate for verification"},
 					&cli.BoolFlag{Name: "skip-verify-hostname", Value: false, Usage: "skip hostname verification (still verifies certificate)"},
 					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Value: false, Usage: "enable verbose logging"},
 					&cli.IntFlag{Name: "ssh-port", Value: 22, Usage: "SSH port for direct connection when bypassing QUIC"},
 					&cli.BoolFlag{Name: "no-passthrough", Value: false, Usage: "disable automatic passthrough for bulk transfers (scp, rsync, sftp)"},
+					&cli.DurationFlag{Name: "path-check-interval", Value: 10 * time.Second, Usage: "interval for checking IP changes for path migration (0 to disable)"},
+					&cli.BoolFlag{Name: "session-layer", Value: false, Usage: "enable session layer for connection resilience"},
+					&cli.IntFlag{Name: "buffer-size", Value: DefaultBufferSize, Usage: "maximum size of send buffer per session in bytes"},
 				},
 				Action: client,
 			},
 		},
 	}
 	if err := app.Run(os.Args); err != nil {
-		panic(err)
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(1)
 	}
 }
 
-func readAndWrite(ctx context.Context, r io.Reader, w io.Writer) <-chan error {
+// readAndWrite copies data from r to w, setting deadlines on QUIC streams
+// to prevent indefinite blocking when the network path is temporarily unavailable.
+// This allows the connection to survive VPN hiccups as long as they're shorter than
+// the idle timeout.
+// If onNetworkTrouble is provided, it will be called when network issues are detected.
+func readAndWrite(ctx context.Context, r io.Reader, w io.Writer, idleTimeout time.Duration, logf logFunc, onNetworkTrouble ...networkTroubleCallback) <-chan error {
 	c := make(chan error)
 	go func() {
 		defer close(c)
@@ -97,27 +117,116 @@ func readAndWrite(ctx context.Context, r io.Reader, w io.Writer) <-chan error {
 		buf := *bufp
 		defer bufPool.Put(bufp)
 
+		// Check if reader/writer support deadlines (QUIC streams do)
+		rDeadliner, rHasDeadline := r.(deadliner)
+		wDeadliner, wHasDeadline := w.(deadliner)
+
+		// Track when we started waiting for network to recover
+		var networkDownSince time.Time
+		var troubleSignaled bool // only signal once per trouble period
+
+		// Helper to signal network trouble
+		signalTrouble := func() {
+			if !troubleSignaled && len(onNetworkTrouble) > 0 {
+				troubleSignaled = true
+				onNetworkTrouble[0]()
+			}
+		}
+
+		logf("[%T->%T] Starting read/write loop (idleTimeout=%v, rHasDeadline=%v, wHasDeadline=%v)",
+			r, w, idleTimeout, rHasDeadline, wHasDeadline)
+
 		for {
+			// Set read deadline if supported
+			if rHasDeadline {
+				// Use a shorter deadline for reads to allow periodic checking
+				// Use 30 seconds or half the idle timeout, whichever is smaller
+				readTimeout := 30 * time.Second
+				if idleTimeout/2 < readTimeout {
+					readTimeout = idleTimeout / 2
+				}
+				rDeadliner.SetReadDeadline(time.Now().Add(readTimeout))
+			}
+
 			nr, err := r.Read(buf)
+
 			if nr > 0 {
-				// Write directly instead of using io.Copy with bytes.NewReader
-				// which was creating unnecessary allocations and copying
+				logf("[%T->%T] Read %d bytes", r, w, nr)
+				// We got data, network is working
+				if !networkDownSince.IsZero() {
+					logf("[%T->%T] Network recovered after %v", r, w, time.Since(networkDownSince))
+				}
+				networkDownSince = time.Time{}
+				troubleSignaled = false // reset for next trouble period
+
+				// Set write deadline if supported
+				if wHasDeadline {
+					wDeadliner.SetWriteDeadline(time.Now().Add(idleTimeout))
+				}
+
 				nw, werr := w.Write(buf[:nr])
 				if werr != nil {
+					logf("[%T->%T] Write error: %v (type: %T)", r, w, werr, werr)
+					// Check if it's a timeout error
+					if isTimeoutError(werr) {
+						logf("[%T->%T] Write timeout detected", r, w)
+						// Write timed out - network might be down
+						if networkDownSince.IsZero() {
+							networkDownSince = time.Now()
+							logf("[%T->%T] Network appears down, starting timer", r, w)
+						}
+						// Signal network trouble to trigger path migration
+						signalTrouble()
+						// Check if we've exceeded the idle timeout
+						downFor := time.Since(networkDownSince)
+						if downFor >= idleTimeout {
+							c <- fmt.Errorf("network unavailable for %v (exceeds idle timeout): %w", downFor, werr)
+							return
+						}
+						logf("[%T->%T] Network down for %v, continuing to retry", r, w, downFor)
+						// Otherwise, continue trying
+						continue
+					}
 					c <- werr
 					return
 				}
+				logf("[%T->%T] Wrote %d bytes", r, w, nw)
 				if nw != nr {
 					c <- io.ErrShortWrite
 					return
 				}
 			}
+
 			if err != nil {
+				logf("[%T->%T] Read error: %v (type: %T)", r, w, err, err)
+				// Check if it's a timeout error (deadline exceeded)
+				if isTimeoutError(err) {
+					logf("[%T->%T] Read timeout (expected during idle/network hiccups)", r, w)
+					// Read timed out - this could be normal idle or network trouble
+					// If we already know the network is down (from write failures),
+					// signal trouble to trigger path migration
+					if !networkDownSince.IsZero() {
+						signalTrouble()
+					}
+					// Check if context is cancelled
+					select {
+					case <-ctx.Done():
+						logf("[%T->%T] Context cancelled: %v", r, w, ctx.Err())
+						c <- ctx.Err()
+						return
+					default:
+						// Continue waiting - the network might come back
+						continue
+					}
+				}
+
 				// Check for context cancellation
 				select {
 				case <-ctx.Done():
+					logf("[%T->%T] Context cancelled: %v", r, w, ctx.Err())
 					c <- ctx.Err()
 				default:
+					logf("[%T->%T] Fatal read error, exiting: %v", r, w, err)
 					c <- err
 				}
 				return
@@ -126,3 +235,32 @@ func readAndWrite(ctx context.Context, r io.Reader, w io.Writer) <-chan error {
 	}()
 	return c
 }
+
+// deadliner is an interface for types that support setting deadlines
+type deadliner interface {
+	SetReadDeadline(t time.Time) error
+	SetWriteDeadline(t time.Time) error
+}
+
+// isTimeoutError checks if an error is a timeout error (deadline exceeded)
+func isTimeoutError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Check for net.Error timeout
+	if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
+		return true
+	}
+	// Also check for os.ErrDeadlineExceeded which some implementations return
+	if errors.Is(err, os.ErrDeadlineExceeded) {
+		return true
+	}
+	return false
+}
+
+// logFunc is a function type for logging
+type logFunc func(format string, v ...interface{})
+
+// networkTroubleCallback is called when network issues are detected (e.g., repeated timeouts).
+// This allows the caller to trigger path migration or other recovery mechanisms.
+type networkTroubleCallback func()

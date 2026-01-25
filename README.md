@@ -2,19 +2,17 @@
 
 > :smile: **quicssh** is a QUIC proxy that allows to use QUIC to connect to an SSH server without needing to patch the client or the server.
 
-This fork includes:
+This is a substantial rewrite of [moul/quicssh](https://github.com/moul/quicssh), which appears to be abandoned and unmaintained. Key improvements include:
 
--   Updated dependencies with latest security patches
--   Optimized data transfer throughput for bulk operations (SCP, SFTP)
--   Configurable idle timeout for flaky connections
--   TLS certificate verification support and reloading certs at runtime
--   NAT punching support
--   Custom SSH daemon address
+- **Session layer for connection resilience**: Transparent reconnection support that survives network changes, VPN switches, and even server IP changes
+- **QUIC path migration**: Seamless handling of client IP changes (e.g., switching WiFi networks)
+- **0-RTT resumption**: Fast reconnection using TLS 1.3 session resumption
+- **Optimized data transfer**: Direct buffer writes, buffer pooling, and tuned QUIC flow control for better throughput
+- **Automatic passthrough**: Bulk transfer tools (scp, rsync, sftp) automatically bypass QUIC for optimal performance
+- **TLS certificate verification**: Proper certificate pinning with optional hostname verification skip for VPN scenarios
+- **Updated dependencies**: Latest security patches and quic-go improvements
 
-Based on [moul/quicssh](https://github.com/moul/quicssh) with improvements from [PR #178](https://github.com/moul/quicssh/pull/178)
-
-This fork is intended to be used directly because upstream seems to have been
-abandoned and is unmaintained.
+Originally based on improvements from [PR #178](https://github.com/moul/quicssh/pull/178).
 
 ## Architecture
 
@@ -46,7 +44,7 @@ SSH Connection proxified with QUIC
 │                   │                   │             │           │           │
 │                   ▼                   │             │           │           │
 │ ┌───────────────────────────────────┐ │             │┌─────────────────────┐│
-│ │  quicssh client --addr wopr:4545  │─┼─quic (udp)──▶│   quicssh server    ││
+│ │  quicssh client --addr wopr:4545  │─┼─QUIC (udp)──▶│   quicssh server    ││
 │ └───────────────────────────────────┘ │             │└─────────────────────┘│
 └───────────────────────────────────────┘             └───────────────────────┘
 ```
@@ -122,13 +120,18 @@ USAGE:
    quicssh server [command options]
 
 OPTIONS:
-   --bind value         bind address (default: "localhost:4242")
-   --sshdaddr value     target address of sshd (default: "localhost:22")
-   --idletimeout value  idle timeout (default: 30s)
-   --insecure           generate and use self-signed certificate (insecure) (default: false)
-   --cert value         path to TLS certificate file
-   --key value          path to TLS private key file
-   --help, -h           show help
+   --bind value             bind address (default: "localhost:4242")
+   --sshdaddr value         target address of sshd (default: "localhost:22")
+   --idle-timeout value     QUIC idle timeout (ignored when --session-layer is enabled) (default: 30s)
+   --insecure               generate and use self-signed certificate (insecure) (default: false)
+   --cert value             path to TLS certificate file
+   --key value              path to TLS private key file
+   --verbose, -v            enable verbose logging (default: false)
+   --session-layer          enable session layer for connection resilience (default: false)
+   --session-timeout value  session timeout for reconnection (default: 30m0s)
+   --max-sessions value     maximum number of concurrent sessions (0 = unlimited) (default: 1024)
+   --buffer-size value      maximum size of send buffer per session in bytes (default: 16777216)
+   --help, -h               show help
 ```
 
 #### Client
@@ -142,13 +145,19 @@ USAGE:
    quicssh client [command options]
 
 OPTIONS:
-   --addr value              address of server (default: "localhost:4242")
-   --localaddr value         source address of UDP packets (default: ":0")
-   --idletimeout value       idle timeout (default: 30s)
-   --insecure                skip TLS certificate verification (insecure) (default: false)
-   --servercert value        path to server's TLS certificate for verification
-   --skip-verify-hostname    skip hostname verification (still verifies certificate) (default: false)
-   --help, -h                show help
+   --addr value                 address of server (default: "localhost:4242")
+   --localaddr value            source address of UDP packets (default: ":0")
+   --idle-timeout value         QUIC idle timeout (ignored when --session-layer is enabled) (default: 30s)
+   --insecure                   skip TLS certificate verification (insecure) (default: false)
+   --servercert value           path to server's TLS certificate for verification
+   --skip-verify-hostname       skip hostname verification (still verifies certificate) (default: false)
+   --verbose, -v                enable verbose logging (default: false)
+   --ssh-port value             SSH port for direct connection when bypassing QUIC (default: 22)
+   --no-passthrough             disable automatic passthrough for bulk transfers (scp, rsync, sftp) (default: false)
+   --path-check-interval value  interval for checking IP changes for path migration (0 to disable) (default: 10s)
+   --session-layer              enable session layer for connection resilience (default: false)
+   --buffer-size value          maximum size of send buffer per session in bytes (default: 16777216)
+   --help, -h                   show help
 ```
 
 ### Examples
@@ -190,46 +199,108 @@ This still provides MITM protection through certificate pinning (the
 certificate must match exactly), but doesn't verify that the hostname/IP
 matches the certificate's SAN field.
 
+## Session Layer
+
+The session layer provides robust connection resilience that goes beyond what QUIC's native path migration can offer. Enable it with `--session-layer` on both client and server.
+
+> **Note**: Both client and server must use `--session-layer` together, or both must not use it. A mismatch will result in a connection error.
+
+### How It Works
+
+1. **Session establishment**: When a client connects, it receives a unique session ID that persists across reconnections.
+
+2. **Data buffering**: Both client and server maintain send buffers (default 16MB) with sequence numbers. Data is kept in the buffer until acknowledged.
+
+3. **Transparent reconnection**: If the connection is lost, the client automatically reconnects and resumes the session:
+    - Sends a `RESUME_SESSION` frame with the last sent/received sequence numbers
+    - Server responds with `RESUME_ACK` containing its state
+    - Both sides replay any unacknowledged data
+    - The SSH session continues without interruption
+
+4. **ACK piggybacking**: Instead of application-level ACKs, we hook into QUIC's internal packet acknowledgment mechanism for efficiency. This currently requires a [fork of quic-go](https://github.com/tsuna/quic-go) with a small patch to expose ACK callbacks.
+
+### Resilience Scenarios
+
+| Scenario                           | QUIC Path Migration | Session Layer   |
+| ---------------------------------- | ------------------- | --------------- |
+| Client IP changes (same server IP) | ✅ Seamless         | ✅ Seamless     |
+| Brief network outage (<30s)        | ✅ Survives         | ✅ Survives     |
+| Server IP changes (VPN switch)     | ❌ Connection lost  | ✅ Reconnects   |
+| Long outage (>30s idle timeout)    | ❌ Connection lost  | ✅ Reconnects   |
+| Process restart                    | ❌ Session lost     | ❌ Session lost |
+
+### Example: VPN-Resilient SSH
+
+```bash
+# Server (with 5-minute session timeout)
+quicssh server --bind 0.0.0.0:4242 --cert server.crt --key server.key \
+    --session-layer --session-timeout 5m
+
+# Client
+ssh -o ProxyCommand="quicssh client --addr %h:4242 --servercert server.crt \
+    --skip-verify-hostname --session-layer" user@hostname
+```
+
+With this configuration, you can:
+
+- Disconnect from one VPN and connect to another
+- Have the server's IP change (as seen by the client)
+- Experience network outages up to the configured session timeout (e.g., hours or even days)
+- Put your laptop to sleep and resume later
+- All without losing your SSH session or any data
+
+> **Tip**: When using `--session-layer`, consider adding `ServerAliveInterval 0` to your SSH client configuration (in `~/.ssh/config`) to prevent SSH from timing out during long idle periods. The session layer handles keepalives at the QUIC level, so SSH-level keepalives are unnecessary and can cause issues if they trigger during a network outage.
+
+### Automatic Passthrough
+
+For bulk transfer tools (scp, rsync, sftp), quicssh automatically detects when it's being spawned by these tools and bypasses QUIC entirely, connecting directly via TCP. This provides optimal performance for large file transfers while still benefiting from QUIC for interactive sessions.
+
+Disable with `--no-passthrough` if you want all traffic to go through QUIC.
+
 ## Performance
 
-This fork includes optimizations for bulk data transfers (e.g., SCP, SFTP):
+### Without Session Layer
 
--   **Optimized data copying**: Direct buffer writes instead of intermediate
-    copies
--   **Buffer pooling**: Reuses 64KB buffers via `sync.Pool` to reduce GC
-    pressure
--   **Tuned QUIC flow control**: Larger receive windows (2MB initial, 16-32MB
-    max) for better throughput on high-latency links
+When running without `--session-layer`, this fork includes optimizations for bulk data transfers:
 
-In benchmarks, these changes reduced allocations by ~99% and improved
-throughput by ~20% for large transfers. Real-world SCP tests showed ~40%
-faster transfers compared to the original implementation.
+- **Direct buffer writes**: Zero-copy data piping between QUIC streams and SSH connections
+- **Buffer pooling**: Reuses 64KB buffers via `sync.Pool` to reduce GC pressure
+- **Tuned QUIC flow control**: Larger receive windows for better throughput on high-latency links
+- **Automatic passthrough**: Bulk transfers (scp, rsync, sftp) bypass QUIC for optimal TCP performance
 
-Note: There is still inherent overhead compared to direct SSH over TCP due to
-QUIC's userspace encryption and UDP packet handling.
+### With Session Layer
+
+The session layer trades some performance for resilience. Because data must be buffered until acknowledged (to enable replay after reconnection), there are additional memory copies on both client and server. This is an intentional tradeoff: you get the ability to survive network outages, VPN switches, and long idle periods, at the cost of some throughput.
+
+For maximum throughput on large transfers, either:
+
+- Don't use `--session-layer` (you still get QUIC path migration for client IP changes)
+- Rely on automatic passthrough, which routes scp/rsync/sftp directly over TCP
+
+Note: There is inherent overhead compared to direct SSH over TCP due to QUIC's userspace encryption and UDP packet handling.
 
 ## Security Considerations
 
--   **TLS Encryption**: QUIC uses TLS 1.3 for encryption. Always use
-    `--cert`/`--key` on the server and `--servercert` on the client for
-    production.
--   **SSH Layer**: SSH provides its own encryption and authentication on top of
-    QUIC, so you get defense in depth.
--   **Insecure Mode**: Only use `--insecure` for testing or on fully trusted
-    networks. It's vulnerable to MITM attacks.
--   **Certificate Verification**: The `--servercert` flag pins the server's
-    certificate, preventing MITM attacks even if an attacker has a valid
-    certificate.
--   **Skip Hostname Verification**: The `--skip-verify-hostname` flag is useful
-    when connecting through proxies or VPNs that change the server's IP
-    address. It still verifies the certificate itself (certificate pinning),
-    but skips checking if the hostname/IP matches the certificate's SAN field.
-    This provides MITM protection while working with dynamic IPs.
+- **TLS Encryption**: QUIC uses TLS 1.3 for encryption. Always use
+  `--cert`/`--key` on the server and `--servercert` on the client for
+  production.
+- **SSH Layer**: SSH provides its own encryption and authentication on top of
+  QUIC, so you get defense in depth.
+- **Insecure Mode**: Only use `--insecure` for testing or on fully trusted
+  networks. It's vulnerable to MITM attacks.
+- **Certificate Verification**: The `--servercert` flag pins the server's
+  certificate, preventing MITM attacks even if an attacker has a valid
+  certificate.
+- **Skip Hostname Verification**: The `--skip-verify-hostname` flag is useful
+  when connecting through proxies or VPNs that change the server's IP
+  address. It still verifies the certificate itself (certificate pinning),
+  but skips checking if the hostname/IP matches the certificate's SAN field.
+  This provides MITM protection while working with dynamic IPs.
 
 ## Resources
 
--   Original project: https://github.com/moul/quicssh
--   https://korben.info/booster-ssh-quic-quicssh.html
+- Original project: https://github.com/moul/quicssh
+- https://korben.info/booster-ssh-quic-quicssh.html
 
 ## License
 
