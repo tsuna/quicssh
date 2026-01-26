@@ -39,7 +39,11 @@ func TestSessionID(t *testing.T) {
 
 func TestNewSessionFrame(t *testing.T) {
 	id, _ := NewSessionID()
-	frame := &NewSessionFrame{SessionID: id}
+	frame := &NewSessionFrame{
+		SessionID:          id,
+		ClientPID:          12345,
+		GrandparentProcess: "vim",
+	}
 
 	// Encode
 	var buf bytes.Buffer
@@ -59,6 +63,44 @@ func TestNewSessionFrame(t *testing.T) {
 	}
 	if newSession.SessionID != id {
 		t.Errorf("SessionID mismatch: got %v, want %v", newSession.SessionID, id)
+	}
+	if newSession.ClientPID != 12345 {
+		t.Errorf("ClientPID mismatch: got %v, want %v", newSession.ClientPID, 12345)
+	}
+	if newSession.GrandparentProcess != "vim" {
+		t.Errorf("GrandparentProcess mismatch: got %q, want %q", newSession.GrandparentProcess, "vim")
+	}
+}
+
+func TestNewSessionFrame_EmptyGrandparent(t *testing.T) {
+	id, _ := NewSessionID()
+	frame := &NewSessionFrame{
+		SessionID:          id,
+		ClientPID:          99999,
+		GrandparentProcess: "",
+	}
+
+	// Encode
+	var buf bytes.Buffer
+	if err := frame.Encode(&buf, nil); err != nil {
+		t.Fatalf("Encode failed: %v", err)
+	}
+
+	// Decode
+	decoded, err := ReadFrame(&buf)
+	if err != nil {
+		t.Fatalf("ReadFrame failed: %v", err)
+	}
+
+	newSession, ok := decoded.(*NewSessionFrame)
+	if !ok {
+		t.Fatalf("Expected *NewSessionFrame, got %T", decoded)
+	}
+	if newSession.ClientPID != 99999 {
+		t.Errorf("ClientPID mismatch: got %v, want %v", newSession.ClientPID, 99999)
+	}
+	if newSession.GrandparentProcess != "" {
+		t.Errorf("GrandparentProcess should be empty, got %q", newSession.GrandparentProcess)
 	}
 }
 

@@ -37,3 +37,28 @@ func isBulkTransferParent() (bool, string) {
 	}
 	return false, ""
 }
+
+// getGrandparentProcessName returns the name of the grandparent process.
+// We skip the parent because it's typically "ssh".
+// Returns empty string if the grandparent cannot be determined.
+func getGrandparentProcessName() string {
+	// Get parent PID (typically ssh)
+	ppid := os.Getppid()
+	if ppid <= 1 {
+		return ""
+	}
+
+	// Get grandparent PID
+	gppid, err := getParentPID(ppid)
+	if err != nil || gppid <= 1 {
+		return ""
+	}
+
+	// Get grandparent process name
+	name, err := getProcessName(gppid)
+	if err != nil {
+		return ""
+	}
+
+	return name
+}

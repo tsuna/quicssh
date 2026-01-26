@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"log"
+	"os"
 	"sync"
 
 	"github.com/quic-go/quic-go"
@@ -21,6 +21,10 @@ type ClientSession struct {
 	connected bool
 	stream    io.ReadWriteCloser
 
+	// Client process info (for logging on server side)
+	clientPID          uint32
+	grandparentProcess string
+
 	// ACK tracking for QUIC-level ACKs
 	ackTracker *AckTracker
 
@@ -35,8 +39,10 @@ func NewClientSession(bufferSize int, logf logFunc) (*ClientSession, error) {
 		return nil, err
 	}
 	cs := &ClientSession{
-		Session: sess,
-		logf:    logf,
+		Session:            sess,
+		clientPID:          uint32(os.Getpid()),
+		grandparentProcess: getGrandparentProcessName(),
+		logf:               logf,
 	}
 	// Create ACK tracker that clears our send buffer when QUIC ACKs packets
 	// Client doesn't have a session timeout, so no onActivity callback needed
@@ -73,14 +79,19 @@ func (cs *ClientSession) Connect(stream io.ReadWriteCloser) error {
 
 	cs.stream = stream
 
-	// Send NEW_SESSION frame
-	frame := &NewSessionFrame{SessionID: cs.ID}
+	// Send NEW_SESSION frame with client process info
+	frame := &NewSessionFrame{
+		SessionID:          cs.ID,
+		ClientPID:          cs.clientPID,
+		GrandparentProcess: cs.grandparentProcess,
+	}
 	if err := frame.Encode(stream, nil); err != nil {
 		return fmt.Errorf("failed to send NEW_SESSION: %w", err)
 	}
 
 	cs.connected = true
-	cs.logf("[ClientSession] Connected with session ID: %s", cs.ID)
+	cs.logf("[ClientSession] Connected with session ID: %s (pid=%d, grandparent=%q)",
+		cs.ID, cs.clientPID, cs.grandparentProcess)
 	return nil
 }
 
@@ -206,13 +217,21 @@ func (cs *ClientSession) DumpStats() {
 	sendBufSize := cs.Session.SendBufferSize()
 	pendingWrites, ackedPackets, highestAcked := cs.ackTracker.Stats()
 
-	// Always log to stderr regardless of --verbose since this is triggered by SIGUSR1
-	log.Printf("=== Client Session Dump ===")
-	log.Printf("  SessionID: %s", cs.Session.ID)
-	log.Printf("  Connected: %v", connected)
-	log.Printf("  SendBuffer: %d bytes", sendBufSize)
-	log.Printf("  LastSentSeq: %d", lastSent)
-	log.Printf("  LastRecvSeq: %d", lastRecv)
-	log.Printf("  QUIC ACKs: pending=%d, acked=%d, highest=%d", pendingWrites, ackedPackets, highestAcked)
-	log.Printf("=== End Session Dump ===")
+	// Always log to stderr regardless of --verbose since this is triggered by SIGUSR1.
+	// Use \r\n because the terminal may be in raw mode (interactive SSH session),
+	// where \n alone doesn't return the cursor to the beginning of the line.
+	// Print in a single write to avoid interleaving with SSH data.
+	fmt.Fprintf(os.Stderr,
+		"\r\n=== Client Session Dump ===\r\n"+
+			"  SessionID: %s\r\n"+
+			"  ClientPID: %d\r\n"+
+			"  GrandparentProcess: %q\r\n"+
+			"  Connected: %v\r\n"+
+			"  SendBuffer: %d bytes\r\n"+
+			"  LastSentSeq: %d\r\n"+
+			"  LastRecvSeq: %d\r\n"+
+			"  QUIC ACKs: pending=%d, acked=%d, highest=%d\r\n"+
+			"=== End Session Dump ===\r\n",
+		cs.Session.ID, cs.clientPID, cs.grandparentProcess, connected,
+		sendBufSize, lastSent, lastRecv, pendingWrites, ackedPackets, highestAcked)
 }
