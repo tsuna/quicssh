@@ -64,18 +64,36 @@ type Frame interface {
 	Encode(w io.Writer, buf []byte) error
 }
 
+// MaxProcessNameLen is the maximum length of a process name in NewSessionFrame.
+const MaxProcessNameLen = 128
+
 // NewSessionFrame is sent by the client to initiate a new session.
 type NewSessionFrame struct {
-	SessionID SessionID
+	SessionID          SessionID
+	ClientPID          uint32 // PID of the quicssh client process
+	GrandparentProcess string // Name of the grandparent process (limited to MaxProcessNameLen)
 }
 
 func (f *NewSessionFrame) Type() uint8 { return FrameTypeNewSession }
 
 func (f *NewSessionFrame) Encode(w io.Writer, _ []byte) error {
-	var buf [1 + 16]byte // 1 byte type + 16 bytes SessionID
+	// Truncate grandparent process name if needed
+	gpName := f.GrandparentProcess
+	if len(gpName) > MaxProcessNameLen {
+		gpName = gpName[:MaxProcessNameLen]
+	}
+
+	// Frame format: type(1) + sessionID(16) + pid(4) + nameLen(1) + name(variable)
+	buf := make([]byte, 1+16+4+1+len(gpName))
 	buf[0] = f.Type()
-	copy(buf[1:], f.SessionID[:])
-	_, err := w.Write(buf[:])
+	copy(buf[1:17], f.SessionID[:])
+	buf[17] = byte(f.ClientPID >> 24)
+	buf[18] = byte(f.ClientPID >> 16)
+	buf[19] = byte(f.ClientPID >> 8)
+	buf[20] = byte(f.ClientPID)
+	buf[21] = byte(len(gpName))
+	copy(buf[22:], gpName)
+	_, err := w.Write(buf)
 	return err
 }
 
@@ -220,6 +238,24 @@ func readNewSessionFrame(r io.Reader) (*NewSessionFrame, error) {
 	if _, err := io.ReadFull(r, f.SessionID[:]); err != nil {
 		return nil, err
 	}
+
+	// Read PID (4 bytes, big endian) + name length (1 byte)
+	var buf [5]byte
+	if _, err := io.ReadFull(r, buf[:]); err != nil {
+		return nil, err
+	}
+	f.ClientPID = uint32(buf[0])<<24 | uint32(buf[1])<<16 | uint32(buf[2])<<8 | uint32(buf[3])
+	nameLen := int(buf[4])
+
+	// Read grandparent process name
+	if nameLen > 0 {
+		nameBuf := make([]byte, nameLen)
+		if _, err := io.ReadFull(r, nameBuf); err != nil {
+			return nil, err
+		}
+		f.GrandparentProcess = string(nameBuf)
+	}
+
 	return f, nil
 }
 

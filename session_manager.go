@@ -22,6 +22,10 @@ type ServerSession struct {
 	// Remote client address (for logging)
 	remoteAddr string
 
+	// Client process info (for logging/debugging)
+	clientPID          uint32
+	grandparentProcess string
+
 	// Connection to local sshd
 	sshdConn net.Conn
 
@@ -129,13 +133,15 @@ func (m *SessionManager) HandleNewSession(ctx context.Context, frame *NewSession
 	sessionCtx, cancel := context.WithCancel(ctx)
 
 	sess := &ServerSession{
-		Session:      NewSessionWithID(frame.SessionID, m.bufferSize),
-		remoteAddr:   remoteAddr,
-		sshdConn:     sshdConn,
-		lastActivity: time.Now(),
-		ctx:          sessionCtx,
-		cancel:       cancel,
-		logf:         m.logf,
+		Session:            NewSessionWithID(frame.SessionID, m.bufferSize),
+		remoteAddr:         remoteAddr,
+		clientPID:          frame.ClientPID,
+		grandparentProcess: frame.GrandparentProcess,
+		sshdConn:           sshdConn,
+		lastActivity:       time.Now(),
+		ctx:                sessionCtx,
+		cancel:             cancel,
+		logf:               m.logf,
 	}
 
 	// Create ACK tracker that clears our send buffer when QUIC ACKs packets
@@ -154,7 +160,8 @@ func (m *SessionManager) HandleNewSession(ctx context.Context, frame *NewSession
 	)
 
 	m.sessions[frame.SessionID] = sess
-	m.logf("[SessionManager] New session created: %s (total: %d)", sess, len(m.sessions))
+	m.logf("[SessionManager] New session created: %s from %q (pid=%d, total: %d)",
+		sess, sess.grandparentProcess, sess.clientPID, len(m.sessions))
 
 	return sess, nil
 }
@@ -317,10 +324,12 @@ func (m *SessionManager) dumpSessions() {
 		sendBufSize := sess.sendBuffer.Size()
 		nextSendSeq := sess.nextSendSeq
 		lastRecvSeq := sess.lastRecvSeq
+		clientPID := sess.clientPID
+		grandparentProcess := sess.grandparentProcess
 		sess.mu.Unlock()
 
-		m.logf("  Session %s: idle=%v, sendBuf=%d bytes, nextSendSeq=%d, lastRecvSeq=%d",
-			sess, idle.Round(time.Second), sendBufSize, nextSendSeq, lastRecvSeq)
+		m.logf("  Session %s: from=%q pid=%d idle=%v sendBuf=%d nextSendSeq=%d lastRecvSeq=%d",
+			sess, grandparentProcess, clientPID, idle.Round(time.Second), sendBufSize, nextSendSeq, lastRecvSeq)
 	}
 	m.logf("=== End Session Dump ===")
 }
