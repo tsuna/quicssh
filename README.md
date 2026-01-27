@@ -257,6 +257,61 @@ For bulk transfer tools (scp, rsync, sftp), quicssh automatically detects when i
 
 Disable with `--no-passthrough` if you want all traffic to go through QUIC.
 
+## Visual Studio Code Remote-SSH Integration
+
+quicssh works great with VS Code's [Remote-SSH extension](https://code.visualstudio.com/docs/remote/ssh), but **you must patch the extension** to fully benefit from quicssh's connection resilience features.
+
+### The Problem
+
+VS Code Remote-SSH has two aggressive timeout values that cause it to abandon working connections ([see issue #11463](https://github.com/microsoft/vscode-remote-release/issues/11463)):
+
+1. **ExecServerCache ping timeout (3 seconds)**: When VS Code tries to verify a cached connection is still alive, it only waits 3 seconds for a response.
+2. **Local server dead man's switch (5 seconds)**: The local server process kills itself if it doesn't receive a keepalive within 5 seconds.
+
+When your laptop sleeps and wakes up, the network stack needs time to recover. Even though quicssh keeps the underlying connection alive (thanks to QUIC's resilience and the session layer), VS Code gives up after just 3-5 seconds and tries to start a fresh connection—which often fails because the network hasn't fully recovered yet.
+
+### The Solution
+
+Run the `patch-vscode-remote-ssh` command to increase these timeouts to 25 hours:
+
+```bash
+quicssh patch-vscode-remote-ssh
+```
+
+This patches the VS Code Remote-SSH extension files in place, backing up the originals with a `.orig` extension. After patching, restart VS Code for the changes to take effect.
+
+To restore the original files:
+
+```bash
+quicssh unpatch-vscode-remote-ssh
+```
+
+> **Note**: You will need to re-run `patch-vscode-remote-ssh` after VS Code updates the Remote-SSH extension.
+
+### Recommended VS Code Configuration
+
+For the best experience with quicssh, add these settings to your VS Code `settings.json`:
+
+```json
+{
+    "remote.SSH.useLocalServer": true,
+    "remote.SSH.showLoginTerminal": true
+}
+```
+
+And in your `~/.ssh/config`, configure your host to use quicssh:
+
+```
+Host myserver
+    ProxyCommand quicssh client --addr %h:4242 --servercert /path/to/server.crt --skip-verify-hostname --session-layer
+```
+
+With this setup and the patched extension, your VS Code remote sessions can survive:
+
+- Laptop sleep/wake cycles (even hours or days)
+- Network switches (WiFi to Ethernet, VPN changes)
+- Brief network outages
+
 ## Performance
 
 ### Without Session Layer
