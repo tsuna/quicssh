@@ -94,6 +94,26 @@ func main() {
 				},
 				Action: client,
 			},
+			{
+				Name:  "patch-vscode-remote-ssh",
+				Usage: "Patch VS Code Remote-SSH extension to increase timeout values for use with quicssh",
+				Description: `This command patches the VS Code Remote-SSH extension to increase two timeout
+values that cause connections to fail despite quicssh keeping them alive:
+
+  1. ExecServerCache ping timeout (3 seconds -> 25 hours)
+  2. Local server dead man's switch (5 seconds -> 25 hours)
+
+The original files are backed up with a .orig extension so you can easily revert.
+Use 'unpatch-vscode-remote-ssh' to restore the original files.
+
+Note: You will need to re-run this command after VS Code updates the extension.`,
+				Action: patchVSCodeRemoteSSH,
+			},
+			{
+				Name:   "unpatch-vscode-remote-ssh",
+				Usage:  "Restore original VS Code Remote-SSH extension files from backups",
+				Action: unpatchVSCodeRemoteSSH,
+			},
 		},
 	}
 	if err := app.Run(os.Args); err != nil {
