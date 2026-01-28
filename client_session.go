@@ -214,7 +214,10 @@ func (cs *ClientSession) DumpStats() {
 	cs.mu.Unlock()
 
 	lastSent, lastRecv := cs.Session.ResumeState()
-	sendBufSize := cs.Session.SendBufferSize()
+	sendBufSize := cs.Session.sendBuffer.Size()
+	sendBufFrames := cs.Session.sendBuffer.Len()
+	sendBufMinSeq := cs.Session.sendBuffer.MinSeq()
+	sendBufMaxSeq := cs.Session.sendBuffer.MaxSeq()
 	pendingWrites, ackedPackets, highestAcked := cs.ackTracker.Stats()
 
 	// Always log to stderr regardless of --verbose since this is triggered by SIGUSR1.
@@ -227,11 +230,12 @@ func (cs *ClientSession) DumpStats() {
 			"  ClientPID: %d\r\n"+
 			"  GrandparentProcess: %q\r\n"+
 			"  Connected: %v\r\n"+
-			"  SendBuffer: %d bytes\r\n"+
+			"  SendBuffer: %d bytes / %d frames (seq %d-%d)\r\n"+
 			"  LastSentSeq: %d\r\n"+
 			"  LastRecvSeq: %d\r\n"+
 			"  QUIC ACKs: pending=%d, acked=%d, highest=%d\r\n"+
 			"=== End Session Dump ===\r\n",
 		cs.Session.ID, cs.clientPID, cs.grandparentProcess, connected,
-		sendBufSize, lastSent, lastRecv, pendingWrites, ackedPackets, highestAcked)
+		sendBufSize, sendBufFrames, sendBufMinSeq, sendBufMaxSeq,
+		lastSent, lastRecv, pendingWrites, ackedPackets, highestAcked)
 }
