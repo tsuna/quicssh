@@ -322,14 +322,19 @@ func (m *SessionManager) dumpSessions() {
 		sess.mu.Lock()
 		idle := time.Since(sess.lastActivity)
 		sendBufSize := sess.sendBuffer.Size()
+		sendBufFrames := sess.sendBuffer.Len()
+		sendBufMinSeq := sess.sendBuffer.MinSeq()
+		sendBufMaxSeq := sess.sendBuffer.MaxSeq()
 		nextSendSeq := sess.nextSendSeq
 		lastRecvSeq := sess.lastRecvSeq
 		clientPID := sess.clientPID
 		grandparentProcess := sess.grandparentProcess
 		sess.mu.Unlock()
 
-		m.logf("  Session %s: from=%q pid=%d idle=%v sendBuf=%d nextSendSeq=%d lastRecvSeq=%d",
-			sess, grandparentProcess, clientPID, idle.Round(time.Second), sendBufSize, nextSendSeq, lastRecvSeq)
+		m.logf("  Session %s: from=%q pid=%d idle=%v sendBuf=%d bytes/%d frames (seq %d-%d) nextSendSeq=%d lastRecvSeq=%d",
+			sess, grandparentProcess, clientPID, idle.Round(time.Second),
+			sendBufSize, sendBufFrames, sendBufMinSeq, sendBufMaxSeq,
+			nextSendSeq, lastRecvSeq)
 	}
 	m.logf("=== End Session Dump ===")
 }
