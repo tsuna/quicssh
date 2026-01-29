@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -20,6 +21,7 @@ type ClientSession struct {
 	// Connection state
 	connected bool
 	stream    io.ReadWriteCloser
+	quicConn  *quic.Conn // stored for stats access
 
 	// Client process info (for logging on server side)
 	clientPID          uint32
@@ -59,10 +61,13 @@ func NewClientSession(bufferSize int, logf logFunc) (*ClientSession, error) {
 // SetQUICConn installs the ACK hook on the QUIC connection.
 // This should be called after establishing/resuming a connection.
 func (cs *ClientSession) SetQUICConn(conn *quic.Conn) {
+	cs.mu.Lock()
+	cs.quicConn = conn
 	// Clear old tracking state from previous connection
 	cs.ackTracker.Clear()
 	// Install ACK hook
 	conn.SetAckHook(cs.ackTracker)
+	cs.mu.Unlock()
 	cs.logf("[ClientSession] ACK hook installed on QUIC connection")
 }
 
@@ -210,7 +215,12 @@ func (cs *ClientSession) Disconnect() {
 // DumpStats logs the current session statistics.
 func (cs *ClientSession) DumpStats() {
 	cs.mu.Lock()
+	now := time.Now()
 	connected := cs.connected
+	var connStats quic.ConnectionStats
+	if quicConn := cs.quicConn; quicConn != nil {
+		connStats = quicConn.ConnectionStats()
+	}
 	cs.mu.Unlock()
 
 	lastSent, lastRecv := cs.Session.ResumeState()
@@ -218,24 +228,34 @@ func (cs *ClientSession) DumpStats() {
 	sendBufFrames := cs.Session.sendBuffer.Len()
 	sendBufMinSeq := cs.Session.sendBuffer.MinSeq()
 	sendBufMaxSeq := cs.Session.sendBuffer.MaxSeq()
-	pendingWrites, ackedPackets, highestAcked := cs.ackTracker.Stats()
+	ackStats := cs.ackTracker.Stats()
 
 	// Always log to stderr regardless of --verbose since this is triggered by SIGUSR1.
 	// Use \r\n because the terminal may be in raw mode (interactive SSH session),
 	// where \n alone doesn't return the cursor to the beginning of the line.
 	// Print in a single write to avoid interleaving with SSH data.
 	fmt.Fprintf(os.Stderr,
-		"\r\n=== Client Session Dump ===\r\n"+
+		"\r\n=== Client Session Dump @ %s ===\r\n"+
 			"  SessionID: %s\r\n"+
-			"  ClientPID: %d\r\n"+
-			"  GrandparentProcess: %q\r\n"+
+			"  ClientPID: %d (GrandparentProcess: %q)\r\n"+
 			"  Connected: %v\r\n"+
 			"  SendBuffer: %d bytes / %d frames (seq %d-%d)\r\n"+
 			"  LastSentSeq: %d\r\n"+
 			"  LastRecvSeq: %d\r\n"+
 			"  QUIC ACKs: pending=%d, acked=%d, highest=%d\r\n"+
+			"  ACK Tracking: lastWrite=%s, lastAck=%s, lastLost=%s (lost=%dpkts)\r\n"+
+			"  QUIC Stats: RTT=%v (min=%v, σ=%v), sent=%s/%dpkts, recv=%s/%dpkts, lost=%s/%dpkts\r\n"+
 			"=== End Session Dump ===\r\n",
+		now.Format("2006/01/02 15:04:05"),
 		cs.Session.ID, cs.clientPID, cs.grandparentProcess, connected,
 		sendBufSize, sendBufFrames, sendBufMinSeq, sendBufMaxSeq,
-		lastSent, lastRecv, pendingWrites, ackedPackets, highestAcked)
+		lastSent, lastRecv,
+		ackStats.PendingWrites, ackStats.AckedPackets, ackStats.HighestAcked,
+		timeAgo(ackStats.LastWriteTime, now), timeAgo(ackStats.LastAckTime, now), timeAgo(ackStats.LastLostTime, now), ackStats.LostCount,
+		connStats.SmoothedRTT.Round(time.Millisecond),
+		connStats.MinRTT.Round(time.Millisecond),
+		connStats.MeanDeviation.Round(time.Millisecond),
+		fmtBytes(connStats.BytesSent), connStats.PacketsSent,
+		fmtBytes(connStats.BytesReceived), connStats.PacketsReceived,
+		fmtBytes(connStats.BytesLost), connStats.PacketsLost)
 }

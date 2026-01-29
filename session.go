@@ -2,7 +2,9 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"sync"
+	"time"
 )
 
 // Session represents the state of a session that can survive QUIC connection failures.
@@ -305,4 +307,26 @@ func (s *Session) ResumeState() (lastSentSeq, lastRecvSeq uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.nextSendSeq - 1, s.lastRecvSeq
+}
+
+// fmtBytes formats bytes in human-readable form (e.g., "42b", "1.5KB", "2.3MB").
+func fmtBytes[T ~int | ~uint64](b T) string {
+	switch {
+	case b < 1024:
+		return fmt.Sprintf("%db", b)
+	case b < 1024*1024:
+		return fmt.Sprintf("%.1fKB", float64(b)/1024)
+	case b < 1024*1024*1024:
+		return fmt.Sprintf("%.1fMB", float64(b)/(1024*1024))
+	default:
+		return fmt.Sprintf("%.1fGB", float64(b)/(1024*1024*1024))
+	}
+}
+
+// timeAgo formats a time as "Xms ago", "Xs ago", etc. Returns "never" for zero time.
+func timeAgo(t time.Time, now time.Time) string {
+	if t.IsZero() {
+		return "never"
+	}
+	return fmt.Sprintf("%v ago", now.Sub(t).Round(time.Millisecond))
 }
