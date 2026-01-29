@@ -162,19 +162,19 @@ func client(c *cli.Context) error {
 	bufferSize := c.Int("buffer-size")
 	sessionLayerEnabled := c.Bool("session-layer")
 
-	// Determine QUIC idle timeout
-	var quicIdleTimeout time.Duration
-	if sessionLayerEnabled {
-		// When session layer is enabled, use 24h as QUIC idle timeout
-		// since the session layer handles reconnection and we don't know
-		// the server's session timeout
-		quicIdleTimeout = 24 * time.Hour
-		if c.IsSet("idle-timeout") {
-			log.Printf("Warning: --idle-timeout is ignored when --session-layer is enabled")
-		}
-	} else {
-		quicIdleTimeout = c.Duration("idle-timeout")
-	}
+	// Determine QUIC idle timeout.
+	// The default (2 minutes) is intentionally shorter than the server's session timeout because:
+	// 1. The server keeps sessions alive for long periods (e.g., 30 minutes or 24h or more)
+	//    to survive laptop sleep and network outages
+	// 2. The client needs to detect dead connections quickly (e.g., after VPN switch,
+	//    wake from sleep, etc.) so it can trigger session resumption
+	// 3. QUIC keepalives (every 5s with 2min timeout) keep the connection alive during
+	//    normal operation, but if keepalives fail (packets not reaching server), the
+	//    idle timeout will fire and trigger reconnection
+	// 4. During laptop sleep, no packets are sent, so the connection survives
+	//    as long as the sleep is shorter than this timeout. When waking from longer
+	//    sleep, the timeout fires immediately, triggering fast reconnection.
+	quicIdleTimeout := c.Duration("idle-timeout")
 
 	quicConfig := newQUICConfig(quicIdleTimeout, bufferSize)
 	logf("QUIC config: IdleTimeout=%v, KeepAlivePeriod=%v, MaxStreamReceiveWindow=%d", quicConfig.MaxIdleTimeout, quicConfig.KeepAlivePeriod, quicConfig.MaxStreamReceiveWindow)

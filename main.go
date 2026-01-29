@@ -81,7 +81,7 @@ func main() {
 				Flags: []cli.Flag{
 					&cli.StringFlag{Name: "addr", Value: "localhost:4242", Usage: "address of server"},
 					&cli.StringFlag{Name: "localaddr", Value: ":0", Usage: "source address of UDP packets"},
-					&cli.DurationFlag{Name: "idle-timeout", Value: 30 * time.Second, Usage: "QUIC idle timeout (ignored when --session-layer is enabled)"},
+					&cli.DurationFlag{Name: "idle-timeout", Value: 2 * time.Minute, Usage: "QUIC idle timeout"},
 					&cli.BoolFlag{Name: "insecure", Value: false, Usage: "skip TLS certificate verification (insecure)"},
 					&cli.StringFlag{Name: "servercert", Value: "", Usage: "path to server's TLS certificate for verification"},
 					&cli.BoolFlag{Name: "skip-verify-hostname", Value: false, Usage: "skip hostname verification (still verifies certificate)"},
