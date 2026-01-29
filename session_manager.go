@@ -32,6 +32,9 @@ type ServerSession struct {
 	// Current QUIC stream (for sending CloseFrame when session expires)
 	stream *quic.Stream
 
+	// Current QUIC connection (for stats in SIGUSR1 dump)
+	quicConn *quic.Conn
+
 	// Last activity time for timeout
 	lastActivity time.Time
 
@@ -314,6 +317,7 @@ func (m *SessionManager) startCleanupLoop(ctx context.Context) {
 
 // dumpSessions prints information about all active sessions.
 func (m *SessionManager) dumpSessions() {
+	now := time.Now()
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 
@@ -329,12 +333,29 @@ func (m *SessionManager) dumpSessions() {
 		lastRecvSeq := sess.lastRecvSeq
 		clientPID := sess.clientPID
 		grandparentProcess := sess.grandparentProcess
+		var connStats quic.ConnectionStats
+		if quicConn := sess.quicConn; quicConn != nil {
+			connStats = quicConn.ConnectionStats()
+		}
 		sess.mu.Unlock()
 
-		m.logf("  Session %s: from=%q pid=%d idle=%v sendBuf=%d bytes/%d frames (seq %d-%d) nextSendSeq=%d lastRecvSeq=%d",
-			sess, grandparentProcess, clientPID, idle.Round(time.Second),
-			sendBufSize, sendBufFrames, sendBufMinSeq, sendBufMaxSeq,
+		stats := sess.ackTracker.Stats()
+
+		m.logf("  Session %s: pid=%d (from=%q) idle=%v sendBuf=%s/%d frames (seq %d-%d) nextSendSeq=%d lastRecvSeq=%d",
+			sess, clientPID, grandparentProcess, idle.Round(time.Second),
+			fmtBytes(sendBufSize), sendBufFrames, sendBufMinSeq, sendBufMaxSeq,
 			nextSendSeq, lastRecvSeq)
+		m.logf("    ACKs: pending=%d, acked=%d, highest=%d",
+			stats.PendingWrites, stats.AckedPackets, stats.HighestAcked)
+		m.logf("    ACK Tracking: lastWrite=%s, lastAck=%s, lastLost=%s (lost=%dpkts)",
+			timeAgo(stats.LastWriteTime, now), timeAgo(stats.LastAckTime, now), timeAgo(stats.LastLostTime, now), stats.LostCount)
+		m.logf("    QUIC Stats: RTT=%v (min=%v, σ=%v), sent=%s/%dpkts, recv=%s/%dpkts, lost=%s/%dpkts",
+			connStats.SmoothedRTT.Round(time.Millisecond),
+			connStats.MinRTT.Round(time.Millisecond),
+			connStats.MeanDeviation.Round(time.Millisecond),
+			fmtBytes(connStats.BytesSent), connStats.PacketsSent,
+			fmtBytes(connStats.BytesReceived), connStats.PacketsReceived,
+			fmtBytes(connStats.BytesLost), connStats.PacketsLost)
 	}
 	m.logf("=== End Session Dump ===")
 }
@@ -375,10 +396,13 @@ func (ss *ServerSession) SSHDWriter() io.Writer {
 // SetQUICConn installs the ACK hook on the QUIC connection.
 // This should be called when a new stream is established for this session.
 func (ss *ServerSession) SetQUICConn(conn *quic.Conn) {
+	ss.mu.Lock()
+	ss.quicConn = conn
 	// Clear old tracking state from previous connection
 	ss.ackTracker.Clear()
 	// Install ACK hook
 	conn.SetAckHook(ss.ackTracker)
+	ss.mu.Unlock()
 	ss.logf("[ServerSession %s] ACK hook installed on QUIC connection", ss)
 }
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"sync"
+	"time"
 
 	"github.com/quic-go/quic-go"
 )
@@ -27,6 +28,12 @@ type AckTracker struct {
 	// ACK tracking (for stats/debugging)
 	highestAckedPacket quic.PacketNumber
 	ackedPacketCount   uint64
+
+	// Timestamps for debugging
+	lastWriteTime time.Time
+	lastAckTime   time.Time
+	lastLostTime  time.Time
+	lostCount     uint64
 }
 
 // NewAckTracker creates a new AckTracker.
@@ -46,6 +53,7 @@ func (t *AckTracker) RecordWrite(seq uint64) {
 	defer t.mu.Unlock()
 
 	t.pendingSeqs = append(t.pendingSeqs, seq)
+	t.lastWriteTime = time.Now()
 }
 
 // OnPacketsAcked is called when QUIC packets are acknowledged.
@@ -58,7 +66,8 @@ func (t *AckTracker) OnPacketsAcked(packets []quic.PacketNumber) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
-	// Update stats
+	// Update stats and timestamp
+	t.lastAckTime = time.Now()
 	for _, pn := range packets {
 		if pn > t.highestAckedPacket {
 			t.highestAckedPacket = pn
@@ -96,6 +105,11 @@ func (t *AckTracker) OnPacketsAcked(packets []quic.PacketNumber) {
 // This implements the quic.AckHookCallback interface.
 // QUIC handles retransmission internally, so we don't need to take action.
 func (t *AckTracker) OnPacketLost(pn quic.PacketNumber) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	t.lastLostTime = time.Now()
+	t.lostCount++
 }
 
 // Clear removes all tracking state. Called when the connection is reset.
@@ -106,11 +120,34 @@ func (t *AckTracker) Clear() {
 	t.pendingSeqs = t.pendingSeqs[:0]
 	t.highestAckedPacket = 0
 	t.ackedPacketCount = 0
+	t.lastWriteTime = time.Time{}
+	t.lastAckTime = time.Time{}
+	t.lastLostTime = time.Time{}
+	t.lostCount = 0
+}
+
+// AckTrackerStats holds statistics from the AckTracker for debugging.
+type AckTrackerStats struct {
+	PendingWrites int
+	AckedPackets  uint64
+	HighestAcked  quic.PacketNumber
+	LastWriteTime time.Time
+	LastAckTime   time.Time
+	LastLostTime  time.Time
+	LostCount     uint64
 }
 
 // Stats returns current tracking statistics for debugging.
-func (t *AckTracker) Stats() (pendingWrites int, ackedPackets uint64, highestAcked quic.PacketNumber) {
+func (t *AckTracker) Stats() AckTrackerStats {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	return len(t.pendingSeqs), t.ackedPacketCount, t.highestAckedPacket
+	return AckTrackerStats{
+		PendingWrites: len(t.pendingSeqs),
+		AckedPackets:  t.ackedPacketCount,
+		HighestAcked:  t.highestAckedPacket,
+		LastWriteTime: t.lastWriteTime,
+		LastAckTime:   t.lastAckTime,
+		LastLostTime:  t.lastLostTime,
+		LostCount:     t.lostCount,
+	}
 }

@@ -15,9 +15,9 @@ func TestAckTracker_RecordWrite(t *testing.T) {
 	tracker.RecordWrite(2)
 	tracker.RecordWrite(3)
 
-	pending, _, _ := tracker.Stats()
-	if pending != 3 {
-		t.Errorf("Expected 3 pending writes, got %d", pending)
+	stats := tracker.Stats()
+	if stats.PendingWrites != 3 {
+		t.Errorf("Expected 3 pending writes, got %d", stats.PendingWrites)
 	}
 }
 
@@ -45,9 +45,9 @@ func TestAckTracker_OnPacketsAcked_ClearsAllWrites(t *testing.T) {
 	}
 
 	// Verify all writes are cleared
-	pending, _, _ := tracker.Stats()
-	if pending != 0 {
-		t.Errorf("Expected 0 pending writes, got %d", pending)
+	stats := tracker.Stats()
+	if stats.PendingWrites != 0 {
+		t.Errorf("Expected 0 pending writes, got %d", stats.PendingWrites)
 	}
 
 	// Second ACK with no pending writes - no callback
@@ -102,15 +102,15 @@ func TestAckTracker_Clear(t *testing.T) {
 	// Clear
 	tracker.Clear()
 
-	pending, ackedPackets, highestAcked := tracker.Stats()
-	if pending != 0 {
-		t.Errorf("Expected 0 pending writes after clear, got %d", pending)
+	stats := tracker.Stats()
+	if stats.PendingWrites != 0 {
+		t.Errorf("Expected 0 pending writes after clear, got %d", stats.PendingWrites)
 	}
-	if ackedPackets != 0 {
-		t.Errorf("Expected 0 acked packets after clear, got %d", ackedPackets)
+	if stats.AckedPackets != 0 {
+		t.Errorf("Expected 0 acked packets after clear, got %d", stats.AckedPackets)
 	}
-	if highestAcked != 0 {
-		t.Errorf("Expected 0 highest acked after clear, got %d", highestAcked)
+	if stats.HighestAcked != 0 {
+		t.Errorf("Expected 0 highest acked after clear, got %d", stats.HighestAcked)
 	}
 }
 
