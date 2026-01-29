@@ -45,6 +45,9 @@ func client(c *cli.Context) error {
 		}
 	}
 
+	// Warn if VS Code Remote-SSH extension is installed but not patched
+	warnUnpatchedVSCodeExtensions()
+
 	// Check if we should bypass QUIC for bulk transfers (scp, rsync, sftp)
 	if !c.Bool("no-passthrough") {
 		if isBulk, cmd := isBulkTransferParent(); isBulk {

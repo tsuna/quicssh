@@ -38,6 +38,81 @@ var patchSpecs = []patchSpec{
 	},
 }
 
+// patchStatus represents the patch state of a file
+type patchStatus int
+
+const (
+	patchStatusUnpatched patchStatus = iota // Needs patching (has old value)
+	patchStatusPatched                      // Already patched (has new value)
+	patchStatusUnknown                      // Pattern not found or unexpected value
+	patchStatusError                        // Error reading file
+)
+
+// checkPatchStatus checks whether a file needs patching for a given spec.
+func checkPatchStatus(filePath string, spec patchSpec) patchStatus {
+	content, err := os.ReadFile(filePath)
+	if err != nil {
+		return patchStatusError
+	}
+
+	oldPattern := spec.searchPrefix + spec.oldValue + spec.searchSuffix
+	newPattern := spec.searchPrefix + spec.newValue + spec.searchSuffix
+
+	if bytes.Contains(content, []byte(newPattern)) {
+		return patchStatusPatched
+	}
+
+	if bytes.Contains(content, []byte(oldPattern)) {
+		return patchStatusUnpatched
+	}
+
+	return patchStatusUnknown
+}
+
+// findUnpatchedVSCodeExtensions returns paths to VS Code Remote-SSH extensions
+// that have at least one file needing patching.
+func findUnpatchedVSCodeExtensions() []string {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil
+	}
+
+	extensionsDir := filepath.Join(homeDir, ".vscode", "extensions")
+	matches, err := filepath.Glob(filepath.Join(extensionsDir, "ms-vscode-remote.remote-ssh-0.*"))
+	if err != nil || len(matches) == 0 {
+		return nil
+	}
+
+	var unpatched []string
+	for _, extDir := range matches {
+		outDir := filepath.Join(extDir, "out")
+		for _, spec := range patchSpecs {
+			filePath := filepath.Join(outDir, spec.filename)
+			if checkPatchStatus(filePath, spec) == patchStatusUnpatched {
+				unpatched = append(unpatched, extDir)
+				break // Only need to find one unpatched file per extension
+			}
+		}
+	}
+
+	return unpatched
+}
+
+// warnUnpatchedVSCodeExtensions prints a warning to stderr if any unpatched
+// VS Code Remote-SSH extensions are found.
+func warnUnpatchedVSCodeExtensions() {
+	unpatched := findUnpatchedVSCodeExtensions()
+	if len(unpatched) == 0 {
+		return
+	}
+
+	fmt.Fprintf(os.Stderr, "quicssh: warning: detected unpatched VS Code extension(s) at:\n")
+	for _, extPath := range unpatched {
+		fmt.Fprintf(os.Stderr, "  - %s\n", extPath)
+	}
+	fmt.Fprintf(os.Stderr, "Run `%s patch-vscode-remote-ssh` to patch and get the full benefits of quicssh with VS Code.\n", os.Args[0])
+}
+
 func patchVSCodeRemoteSSH(c *cli.Context) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
