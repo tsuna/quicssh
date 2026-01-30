@@ -311,10 +311,15 @@ type stdinData struct {
 func runSessionLoopWithReconnect(ctx context.Context, clientSession *ClientSession, cfg *sessionLayerConfig) error {
 	logf := cfg.logf
 
-	// Set up SIGUSR1 handler to dump session stats
+	// Set up signal handlers for diagnostics:
+	// - SIGUSR1: dump session stats
+	// - SIGVTALRM: dump goroutine stack traces
 	sigUSR1 := make(chan os.Signal, 1)
+	sigVTALRM := make(chan os.Signal, 1)
 	signal.Notify(sigUSR1, syscall.SIGUSR1)
+	signal.Notify(sigVTALRM, syscall.SIGVTALRM)
 	defer signal.Stop(sigUSR1)
+	defer signal.Stop(sigVTALRM)
 
 	go func() {
 		for {
@@ -323,6 +328,8 @@ func runSessionLoopWithReconnect(ctx context.Context, clientSession *ClientSessi
 				return
 			case <-sigUSR1:
 				clientSession.DumpStats()
+			case <-sigVTALRM:
+				dumpGoroutines()
 			}
 		}
 	}()
