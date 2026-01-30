@@ -74,6 +74,19 @@ func (cs *ClientSession) SetQUICConn(conn *quic.Conn) {
 	cs.logf("[ClientSession] ACK hook installed on QUIC connection")
 }
 
+// CloseQUIC tries to close the underlying QUIC connection gracefully.
+// This should be called when the client is shutting down to notify the server.
+func (cs *ClientSession) CloseQUIC(reason string) {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+	if cs.quicConn != nil {
+		cs.logf("[ClientSession] Closing QUIC connection: %s", reason)
+		if err := cs.quicConn.CloseWithError(0, reason); err != nil {
+			cs.logf("[ClientSession] Error closing QUIC connection: %v", err)
+		}
+	}
+}
+
 // RecordWrite records a frame write for QUIC ACK tracking.
 // This should be called after writing a frame to the stream.
 func (cs *ClientSession) RecordWrite(seq uint64) {
