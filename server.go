@@ -98,11 +98,9 @@ func server(c *cli.Context) error {
 	var cm *certManager
 
 	// Set up verbose logging
-	verbose := c.Bool("verbose")
-	logf := func(format string, v ...interface{}) {
-		if verbose {
-			log.Printf(format, v...)
-		}
+	logf, logFile := createLogFunc(c)
+	if logFile != nil {
+		defer logFile.Close()
 	}
 
 	// Determine how to load the TLS certificate

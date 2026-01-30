@@ -1,11 +1,22 @@
 package main
 
 import (
+	"crypto/md5"
 	"errors"
 	"fmt"
 	"sync"
 	"time"
 )
+
+// frameDigest returns a string with preview and MD5 checksum for debugging.
+func frameDigest(data []byte) string {
+	preview := data
+	if len(preview) > 128 {
+		preview = preview[:128]
+	}
+	sum := md5.Sum(data)
+	return fmt.Sprintf("len=%d md5=%x preview=%q", len(data), sum, preview)
+}
 
 // Session represents the state of a session that can survive QUIC connection failures.
 // It tracks sequence numbers and maintains buffers for unacknowledged data.
@@ -266,18 +277,29 @@ func (s *Session) HandleAck(ack *AckFrame) (removedCount int, removedMinSeq, rem
 
 // HandleData processes a received DATA frame.
 // Returns true if this is new data (not a duplicate), false if duplicate.
-func (s *Session) HandleData(data *DataFrame) bool {
+// The logf parameter is optional - if provided, debug info will be logged.
+func (s *Session) HandleData(data *DataFrame, logf ...func(format string, args ...any)) bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	// Check for duplicate
 	if data.Seq <= s.lastRecvSeq {
+		if len(logf) > 0 && logf[0] != nil {
+			logf[0]("[Session %s] HandleData: DUPLICATE seq=%d <= lastRecvSeq=%d, dropping",
+				s.ID, data.Seq, s.lastRecvSeq)
+		}
 		return false // Duplicate
 	}
 
+	oldLastRecvSeq := s.lastRecvSeq
 	// Note: This simple implementation assumes in-order delivery.
 	// For out-of-order, we'd need a receive buffer too.
 	s.lastRecvSeq = data.Seq
+
+	if len(logf) > 0 && logf[0] != nil {
+		logf[0]("[Session %s] HandleData: NEW seq=%d (was lastRecvSeq=%d, now=%d)",
+			s.ID, data.Seq, oldLastRecvSeq, s.lastRecvSeq)
+	}
 	return true
 }
 

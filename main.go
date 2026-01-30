@@ -5,8 +5,10 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"runtime/debug"
+	"strings"
 	"sync"
 	"time"
 
@@ -280,6 +282,51 @@ func isTimeoutError(err error) bool {
 
 // logFunc is a function type for logging
 type logFunc func(format string, v ...interface{})
+
+// createLogFunc creates a logging function based on --verbose flag and QUICSSH_VERBOSE env var.
+// If --verbose is set, logs to stderr.
+// If QUICSSH_VERBOSE=1, logs to stderr.
+// If QUICSSH_VERBOSE starts with "/", logs to that file path.
+// Returns the logFunc and an optional file that should be closed when done.
+func createLogFunc(c *cli.Context) (logFunc, *os.File) {
+	// Check --verbose flag first (takes precedence)
+	if c.Bool("verbose") {
+		return func(format string, v ...interface{}) {
+			log.Printf(format, v...)
+		}, nil
+	}
+
+	// Check QUICSSH_VERBOSE env var
+	verboseEnv := os.Getenv("QUICSSH_VERBOSE")
+	if verboseEnv == "" {
+		return func(format string, v ...interface{}) {}, nil
+	}
+
+	if verboseEnv == "1" {
+		return func(format string, v ...interface{}) {
+			log.Printf(format, v...)
+		}, nil
+	}
+
+	if strings.HasPrefix(verboseEnv, "/") {
+		// Open file for logging
+		f, err := os.OpenFile(verboseEnv, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		if err != nil {
+			log.Printf("Warning: failed to open log file %s: %v", verboseEnv, err)
+			return func(format string, v ...interface{}) {}, nil
+		}
+		logger := log.New(f, "", log.LstdFlags)
+		return func(format string, v ...interface{}) {
+			logger.Printf(format, v...)
+		}, f
+	}
+
+	// Unknown value, ignore
+	return func(format string, v ...interface{}) {}, nil
+}
+
+// debugFrames is true if per-frame debug logging is enabled via QUICSSH_DEBUG_FRAMES=1.
+var debugFrames = os.Getenv("QUICSSH_DEBUG_FRAMES") == "1"
 
 // networkTroubleCallback is called when network issues are detected (e.g., repeated timeouts).
 // This allows the caller to trigger path migration or other recovery mechanisms.

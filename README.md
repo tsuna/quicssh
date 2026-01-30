@@ -352,6 +352,31 @@ Note: There is inherent overhead compared to direct SSH over TCP due to QUIC's u
   but skips checking if the hostname/IP matches the certificate's SAN field.
   This provides MITM protection while working with dynamic IPs.
 
+## Troubleshooting
+
+### Environment Variables
+
+The following environment variables can be used to enable debug logging:
+
+| Variable               | Values          | Description                                                                                                        |
+| ---------------------- | --------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `QUICSSH_VERBOSE`      | `1`             | Enable verbose logging to stderr                                                                                   |
+| `QUICSSH_VERBOSE`      | `/path/to/file` | Log to the specified file (useful for VS Code remote-ssh where stderr is not visible)                              |
+| `QUICSSH_DEBUG_FRAMES` | `1`             | Enable per-frame debug logging with MD5 checksums and payload previews. Requires `QUICSSH_VERBOSE` to also be set. |
+
+Example usage:
+
+```bash
+# Verbose logging to stderr
+QUICSSH_VERBOSE=1 ssh -o ProxyCommand="quicssh client --addr %h:4242 --session-layer" user@host
+
+# Log to a file (useful for debugging VS Code remote-ssh issues)
+QUICSSH_VERBOSE=/tmp/quicssh.log ssh -o ProxyCommand="quicssh client --addr %h:4242 --session-layer" user@host
+
+# Full frame-level debugging (very verbose)
+QUICSSH_VERBOSE=1 QUICSSH_DEBUG_FRAMES=1 ssh -o ProxyCommand="quicssh client --addr %h:4242 --session-layer" user@host
+```
+
 ## Resources
 
 - Original project: https://github.com/moul/quicssh
