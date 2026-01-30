@@ -123,6 +123,9 @@ func (h *SessionStreamHandler) handleResumeSession(ctx context.Context, stream *
 // is cleaned up via sess.cancel(), this loop will be cancelled. The session context
 // is a child of the QUIC connection context, so it will also be cancelled if the
 // QUIC connection dies.
+//
+// When a session resumes, HandleResumeSession cancels the old loop before
+// returning, ensuring the new loop doesn't race with the old one.
 func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerSession, clientAddr string) error {
 	streamID := stream.StreamID()
 
@@ -131,7 +134,15 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 	defer sess.SetStream(nil) // Clear stream reference when loop ends
 
 	loopCtx, cancel := context.WithCancel(sess.Context())
-	defer cancel()
+	loopDone := make(chan struct{})
+
+	// Store the loop context so it can be cancelled on session resume
+	sess.SetLoopContext(cancel, loopDone)
+	defer func() {
+		cancel()
+		sess.ClearLoopContext()
+		close(loopDone)
+	}()
 
 	errCh := make(chan error, 2)
 

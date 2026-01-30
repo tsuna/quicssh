@@ -78,15 +78,30 @@ func (b *SequenceBuffer) Add(seq uint64, payload []byte) error {
 }
 
 // AckUpTo removes all frames with sequence <= seq from the buffer.
-func (b *SequenceBuffer) AckUpTo(seq uint64) {
+// Returns the number of frames removed and the sequence range that was removed.
+func (b *SequenceBuffer) AckUpTo(seq uint64) (removedCount int, removedMinSeq, removedMaxSeq uint64) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
+
+	removedMinSeq = ^uint64(0) // Max uint64
+	removedMaxSeq = 0
 
 	for s, payload := range b.frames {
 		if s <= seq {
 			b.size -= len(payload)
 			delete(b.frames, s)
+			removedCount++
+			if s < removedMinSeq {
+				removedMinSeq = s
+			}
+			if s > removedMaxSeq {
+				removedMaxSeq = s
+			}
 		}
+	}
+
+	if removedCount == 0 {
+		removedMinSeq = 0
 	}
 
 	// Update minSeq
@@ -101,6 +116,8 @@ func (b *SequenceBuffer) AckUpTo(seq uint64) {
 		}
 		b.minSeq = newMin
 	}
+
+	return removedCount, removedMinSeq, removedMaxSeq
 }
 
 // GetFromSeq returns all frames with sequence > seq, in order.
@@ -239,11 +256,12 @@ func (s *Session) PrepareData(payload []byte) (*DataFrame, error) {
 }
 
 // HandleAck processes an ACK frame, clearing acknowledged data from the buffer.
-func (s *Session) HandleAck(ack *AckFrame) {
+// Returns the number of frames removed and the sequence range that was removed.
+func (s *Session) HandleAck(ack *AckFrame) (removedCount int, removedMinSeq, removedMaxSeq uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.sendBuffer.AckUpTo(ack.Seq)
+	return s.sendBuffer.AckUpTo(ack.Seq)
 }
 
 // HandleData processes a received DATA frame.
