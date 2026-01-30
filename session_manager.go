@@ -42,6 +42,12 @@ type ServerSession struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// Loop cancellation for handling session resume.
+	// When a session resumes, we need to cancel the old runSessionLoop
+	// before starting a new one to avoid race conditions.
+	loopCancel context.CancelFunc
+	loopDone   chan struct{}
+
 	// ACK tracking for QUIC-level ACKs
 	ackTracker *AckTracker
 
@@ -82,6 +88,45 @@ func (ss *ServerSession) CloseStream(reason string) {
 		_ = closeFrame.Encode(stream, nil)
 		stream.Close()
 	}
+}
+
+// CancelLoop cancels the current runSessionLoop (if any) and waits for it to exit.
+// This must be called before starting a new runSessionLoop to avoid race conditions.
+func (ss *ServerSession) CancelLoop() {
+	ss.mu.Lock()
+	cancel := ss.loopCancel
+	done := ss.loopDone
+	ss.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	if done != nil {
+		// Wait for the old loop to exit with a timeout
+		select {
+		case <-done:
+			ss.logf("[session %s] Old loop exited cleanly", ss.ID)
+		case <-time.After(5 * time.Second):
+			ss.logf("[session %s] Timeout waiting for old loop to exit", ss.ID)
+		}
+	}
+}
+
+// SetLoopContext stores the loop's cancel function and done channel.
+// This is called at the start of runSessionLoop.
+func (ss *ServerSession) SetLoopContext(cancel context.CancelFunc, done chan struct{}) {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.loopCancel = cancel
+	ss.loopDone = done
+}
+
+// ClearLoopContext clears the loop context when the loop exits.
+func (ss *ServerSession) ClearLoopContext() {
+	ss.mu.Lock()
+	defer ss.mu.Unlock()
+	ss.loopCancel = nil
+	ss.loopDone = nil
 }
 
 // SessionManager manages all active sessions on the server.
@@ -151,8 +196,11 @@ func (m *SessionManager) HandleNewSession(ctx context.Context, frame *NewSession
 	// and updates lastActivity on any QUIC activity (including keep-alives)
 	sess.ackTracker = NewAckTracker(
 		func(upToSeq uint64) {
-			sess.Session.HandleAck(&AckFrame{Seq: upToSeq})
-			sess.logf("[ServerSession %s] QUIC ACK cleared buffer up to seq=%d", sess, upToSeq)
+			removed, minSeq, maxSeq := sess.Session.HandleAck(&AckFrame{Seq: upToSeq})
+			if removed > 0 {
+				sess.logf("[ServerSession %s] QUIC ACK cleared %d frames (seq %d-%d) up to seq=%d",
+					sess, removed, minSeq, maxSeq, upToSeq)
+			}
 		},
 		func() {
 			// Update lastActivity on any QUIC activity (including keep-alive ACKs)
@@ -195,12 +243,13 @@ func (m *SessionManager) evictOldestLocked() {
 }
 
 // HandleResumeSession looks up an existing session and returns resume state.
+// It also cancels any existing runSessionLoop to prevent race conditions.
 func (m *SessionManager) HandleResumeSession(frame *ResumeSessionFrame, remoteAddr string) (*ServerSession, *ResumeAckFrame, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
 
 	sess, exists := m.sessions[frame.SessionID]
 	if !exists {
+		m.mu.Unlock()
 		return nil, nil, ErrSessionNotFound
 	}
 
@@ -216,6 +265,15 @@ func (m *SessionManager) HandleResumeSession(frame *ResumeSessionFrame, remoteAd
 
 	m.logf("[SessionManager] Session resumed: %s (was %s) (lastRecv=%d, lastSent=%d)",
 		sess, oldAddr, ack.LastRecvSeq, ack.LastSentSeq)
+
+	// Release the lock before cancelling the old loop (which may block)
+	m.mu.Unlock()
+
+	// Cancel the old runSessionLoop and wait for it to exit.
+	// This prevents the race condition where two loops are reading from sshd.
+	m.logf("[SessionManager] Cancelling old loop for session %s...", sess.ID)
+	sess.CancelLoop()
+	m.logf("[SessionManager] Old loop cancelled for session %s", sess.ID)
 
 	return sess, ack, nil
 }

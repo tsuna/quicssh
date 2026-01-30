@@ -298,6 +298,12 @@ func runClientSessionLayer(ctx context.Context, stream *quic.Stream, cfg *sessio
 	return runSessionLoopWithReconnect(ctx, clientSession, cfg)
 }
 
+// stdinData represents data read from stdin or an error/EOF
+type stdinData struct {
+	data []byte
+	err  error
+}
+
 // runSessionLoopWithReconnect runs the bidirectional data flow and handles reconnection.
 func runSessionLoopWithReconnect(ctx context.Context, clientSession *ClientSession, cfg *sessionLayerConfig) error {
 	logf := cfg.logf
@@ -318,12 +324,39 @@ func runSessionLoopWithReconnect(ctx context.Context, clientSession *ClientSessi
 		}
 	}()
 
+	// Start a single stdin reader goroutine that persists across reconnections.
+	// This avoids the race condition where multiple goroutines read from stdin.
+	stdinCh := make(chan stdinData, 1)
+	go func() {
+		buf := make([]byte, 32*1024)
+		for {
+			n, err := os.Stdin.Read(buf)
+			if n > 0 {
+				// Make a copy of the data since buf will be reused
+				data := make([]byte, n)
+				copy(data, buf[:n])
+				select {
+				case stdinCh <- stdinData{data: data}:
+				case <-ctx.Done():
+					return
+				}
+			}
+			if err != nil {
+				select {
+				case stdinCh <- stdinData{err: err}:
+				case <-ctx.Done():
+				}
+				return
+			}
+		}
+	}()
+
 	for {
 		// Create a child context for this connection attempt
 		connCtx, connCancel := context.WithCancel(ctx)
 
 		// Run the session loop
-		err := runSessionLoop(connCtx, clientSession, logf)
+		err := runSessionLoop(connCtx, clientSession, stdinCh, logf)
 
 		connCancel()
 
@@ -362,12 +395,13 @@ func runSessionLoopWithReconnect(ctx context.Context, clientSession *ClientSessi
 }
 
 // runSessionLoop runs the bidirectional data flow for a single connection.
-func runSessionLoop(ctx context.Context, clientSession *ClientSession, logf logFunc) error {
+// stdinCh is a channel that provides data read from stdin by the persistent reader.
+func runSessionLoop(ctx context.Context, clientSession *ClientSession, stdinCh <-chan stdinData, logf logFunc) error {
 	errCh := make(chan error, 2)
 
 	// Goroutine: stdin -> session -> stream
 	go func() {
-		errCh <- clientStdinToSession(ctx, clientSession, logf)
+		errCh <- clientStdinToSession(ctx, clientSession, stdinCh, logf)
 	}()
 
 	// Goroutine: stream -> session -> stdout
@@ -375,11 +409,19 @@ func runSessionLoop(ctx context.Context, clientSession *ClientSession, logf logF
 		errCh <- clientSessionToStdout(ctx, clientSession, logf)
 	}()
 
-	// Wait for either goroutine to finish
+	// Wait for first goroutine to finish
 	err := <-errCh
 
 	if err != nil && err != io.EOF && err != context.Canceled {
 		logf("Session loop error: %v", err)
+	}
+
+	// Wait for second goroutine with a timeout
+	select {
+	case <-errCh:
+		// Second goroutine finished
+	case <-time.After(5 * time.Second):
+		logf("Timeout waiting for second goroutine to exit")
 	}
 
 	return err
@@ -401,7 +443,9 @@ func isRecoverableError(err error) bool {
 		contains(errStr, "network is unreachable") ||
 		contains(errStr, "no route to host") ||
 		contains(errStr, "Application error 0x0") ||
-		contains(errStr, "stateless reset") { // Server restarted
+		contains(errStr, "stateless reset") || // Server restarted
+		contains(errStr, "sendmsg") || // UDP socket error during VPN switch
+		contains(errStr, "invalid argument") { // UDP socket in invalid state
 		return true
 	}
 
@@ -620,21 +664,15 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// clientStdinToSession reads from stdin and sends DATA frames.
-func clientStdinToSession(ctx context.Context, session *ClientSession, logf logFunc) error {
-	buf := make([]byte, 32*1024)
+// clientStdinToSession reads from the stdin channel and sends DATA frames.
+// The stdinCh is fed by a persistent goroutine that reads from os.Stdin.
+func clientStdinToSession(ctx context.Context, session *ClientSession, stdinCh <-chan stdinData, logf logFunc) error {
 	backpressureLogged := false
 
 	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-
 		// Backpressure: wait if send buffer is full
 		// This prevents us from reading more data from stdin than we can buffer
-		for session.SendBufferIsFull(len(buf)) {
+		for session.SendBufferIsFull(32 * 1024) {
 			if !backpressureLogged {
 				logf("Send buffer full (%d bytes), applying backpressure on stdin",
 					session.SendBufferSize())
@@ -653,20 +691,24 @@ func clientStdinToSession(ctx context.Context, session *ClientSession, logf logF
 			backpressureLogged = false
 		}
 
-		n, err := os.Stdin.Read(buf)
-		if err != nil {
-			if err == io.EOF {
-				// stdin closed - send CLOSE frame
-				logf("stdin EOF, closing session")
-				session.Close("stdin closed")
-				return nil
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case data := <-stdinCh:
+			if data.err != nil {
+				if data.err == io.EOF {
+					// stdin closed - send CLOSE frame
+					logf("stdin EOF, closing session")
+					session.Close("stdin closed")
+					return nil
+				}
+				return fmt.Errorf("stdin read error: %w", data.err)
 			}
-			return fmt.Errorf("stdin read error: %w", err)
-		}
 
-		if n > 0 {
-			if err := session.SendData(ctx, buf[:n]); err != nil {
-				return fmt.Errorf("send data error: %w", err)
+			if len(data.data) > 0 {
+				if err := session.SendData(ctx, data.data); err != nil {
+					return fmt.Errorf("send data error: %w", err)
+				}
 			}
 		}
 	}

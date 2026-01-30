@@ -50,8 +50,11 @@ func NewClientSession(bufferSize int, logf logFunc) (*ClientSession, error) {
 	// Client doesn't have a session timeout, so no onActivity callback needed
 	cs.ackTracker = NewAckTracker(
 		func(upToSeq uint64) {
-			cs.Session.HandleAck(&AckFrame{Seq: upToSeq})
-			cs.logf("[ClientSession] QUIC ACK cleared buffer up to seq=%d", upToSeq)
+			removed, minSeq, maxSeq := cs.Session.HandleAck(&AckFrame{Seq: upToSeq})
+			if removed > 0 {
+				cs.logf("[ClientSession] QUIC ACK cleared %d frames (seq %d-%d) up to seq=%d",
+					removed, minSeq, maxSeq, upToSeq)
+			}
 		},
 		nil, // no activity tracking on client
 	)
