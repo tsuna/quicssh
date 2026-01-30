@@ -270,7 +270,8 @@ func (m *SessionManager) HandleResumeSession(frame *ResumeSessionFrame, remoteAd
 	m.mu.Unlock()
 
 	// Cancel the old runSessionLoop and wait for it to exit.
-	// This prevents the race condition where two loops are reading from sshd.
+	// This prevents race conditions where the old sshdToStream goroutine
+	// competes with the new one to read from sshd and allocate sequence numbers.
 	m.logf("[SessionManager] Cancelling old loop for session %s...", sess.ID)
 	sess.CancelLoop()
 	m.logf("[SessionManager] Old loop cancelled for session %s", sess.ID)

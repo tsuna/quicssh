@@ -38,11 +38,9 @@ func client(c *cli.Context) error {
 	}()
 	defer signal.Stop(sigCh)
 
-	verbose := c.Bool("verbose")
-	logf := func(format string, v ...interface{}) {
-		if verbose {
-			log.Printf(format, v...)
-		}
+	logf, logFile := createLogFunc(c)
+	if logFile != nil {
+		defer logFile.Close()
 	}
 
 	// Warn if VS Code Remote-SSH extension is installed but not patched
@@ -381,47 +379,58 @@ func runSessionLoopWithReconnect(ctx context.Context, clientSession *ClientSessi
 		logf("Connection lost: %v - attempting to reconnect...", err)
 
 		// Mark session as disconnected
+		logf("[reconnect] calling Disconnect()")
 		clientSession.Disconnect()
 
 		// Attempt to reconnect
+		logf("[reconnect] calling attemptReconnect()")
 		if err := attemptReconnect(ctx, clientSession, cfg); err != nil {
 			logf("Reconnection failed: %v", err)
 			return fmt.Errorf("reconnection failed: %w", err)
 		}
 
-		logf("Reconnection successful, resuming session")
+		logf("[reconnect] attemptReconnect() succeeded, resuming session loop")
 		// Loop continues with the new connection
 	}
 }
 
 // runSessionLoop runs the bidirectional data flow for a single connection.
-// stdinCh is a channel that provides data read from stdin by the persistent reader.
+// Returns when either goroutine finishes, after waiting for both to exit.
+// The stdinCh channel provides data from a persistent stdin reader goroutine.
 func runSessionLoop(ctx context.Context, clientSession *ClientSession, stdinCh <-chan stdinData, logf logFunc) error {
 	errCh := make(chan error, 2)
 
-	// Goroutine: stdin -> session -> stream
+	// Goroutine: stdin channel -> session -> stream
 	go func() {
-		errCh <- clientStdinToSession(ctx, clientSession, stdinCh, logf)
+		logf("[runSessionLoop] stdin goroutine starting")
+		err := clientStdinToSession(ctx, clientSession, stdinCh, logf)
+		logf("[runSessionLoop] stdin goroutine exiting: %v", err)
+		errCh <- err
 	}()
 
 	// Goroutine: stream -> session -> stdout
 	go func() {
-		errCh <- clientSessionToStdout(ctx, clientSession, logf)
+		logf("[runSessionLoop] stdout goroutine starting")
+		err := clientSessionToStdout(ctx, clientSession, logf)
+		logf("[runSessionLoop] stdout goroutine exiting: %v", err)
+		errCh <- err
 	}()
 
-	// Wait for first goroutine to finish
+	// Wait for first goroutine to finish (this is the primary error)
 	err := <-errCh
 
 	if err != nil && err != io.EOF && err != context.Canceled {
 		logf("Session loop error: %v", err)
 	}
 
-	// Wait for second goroutine with a timeout
+	// Wait for second goroutine to finish too
+	logf("[runSessionLoop] waiting for second goroutine to exit")
 	select {
-	case <-errCh:
-		// Second goroutine finished
+	case err2 := <-errCh:
+		logf("[runSessionLoop] second goroutine exited: %v", err2)
 	case <-time.After(5 * time.Second):
-		logf("Timeout waiting for second goroutine to exit")
+		// Timeout - the stdout goroutine might be blocked waiting for data
+		logf("[runSessionLoop] timeout waiting for second goroutine")
 	}
 
 	return err
@@ -444,8 +453,8 @@ func isRecoverableError(err error) bool {
 		contains(errStr, "no route to host") ||
 		contains(errStr, "Application error 0x0") ||
 		contains(errStr, "stateless reset") || // Server restarted
-		contains(errStr, "sendmsg") || // UDP socket error during VPN switch
-		contains(errStr, "invalid argument") { // UDP socket in invalid state
+		contains(errStr, "sendmsg") || // UDP socket errors (e.g., after laptop wake from sleep)
+		contains(errStr, "invalid argument") { // Socket in invalid state
 		return true
 	}
 
@@ -614,7 +623,10 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 		if len(framesToReplay) > 0 {
 			logf("Replaying %d unacknowledged frames...", len(framesToReplay))
 			encBuf := clientSession.EncodeBuffer()
-			for _, frame := range framesToReplay {
+			for i, frame := range framesToReplay {
+				if debugFrames {
+					logf("  replay[%d]: seq=%d %s", i, frame.Seq, frameDigest(frame.Payload))
+				}
 				if err := frame.Encode(stream, encBuf); err != nil {
 					logf("Failed to replay frame seq=%d: %v", frame.Seq, err)
 					stream.Close()
@@ -664,17 +676,17 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	}
 }
 
-// clientStdinToSession reads from the stdin channel and sends DATA frames.
-// The stdinCh is fed by a persistent goroutine that reads from os.Stdin.
+// clientStdinToSession reads from the stdin channel and sends data to the session.
+// The stdinCh channel is fed by a persistent goroutine that reads from os.Stdin.
 func clientStdinToSession(ctx context.Context, session *ClientSession, stdinCh <-chan stdinData, logf logFunc) error {
 	backpressureLogged := false
 
 	for {
 		// Backpressure: wait if send buffer is full
-		// This prevents us from reading more data from stdin than we can buffer
+		// This prevents us from consuming more data from the channel than we can buffer
 		for session.SendBufferIsFull(32 * 1024) {
 			if !backpressureLogged {
-				logf("Send buffer full (%d bytes), applying backpressure on stdin",
+				logf("[stdin] Send buffer full (%d bytes), applying backpressure",
 					session.SendBufferSize())
 				backpressureLogged = true
 			}
@@ -686,26 +698,36 @@ func clientStdinToSession(ctx context.Context, session *ClientSession, stdinCh <
 			}
 		}
 		if backpressureLogged {
-			logf("Send buffer has space (%d bytes), resuming stdin reads",
+			logf("[stdin] Send buffer has space (%d bytes), resuming",
 				session.SendBufferSize())
 			backpressureLogged = false
 		}
 
+		// Wait for data from stdin channel or context cancellation
 		select {
 		case <-ctx.Done():
+			logf("[stdin] Context cancelled")
 			return ctx.Err()
-		case data := <-stdinCh:
+		case data, ok := <-stdinCh:
+			if !ok {
+				// Channel closed
+				logf("[stdin] Channel closed, closing session")
+				session.Close("stdin closed")
+				return nil
+			}
 			if data.err != nil {
 				if data.err == io.EOF {
 					// stdin closed - send CLOSE frame
-					logf("stdin EOF, closing session")
+					logf("[stdin] EOF, closing session")
 					session.Close("stdin closed")
 					return nil
 				}
 				return fmt.Errorf("stdin read error: %w", data.err)
 			}
-
 			if len(data.data) > 0 {
+				if debugFrames {
+					logf("[stdin] Sending seq=%d %s", session.LastSentSeq()+1, frameDigest(data.data))
+				}
 				if err := session.SendData(ctx, data.data); err != nil {
 					return fmt.Errorf("send data error: %w", err)
 				}
@@ -734,9 +756,12 @@ func clientSessionToStdout(ctx context.Context, session *ClientSession, logf log
 
 		switch f := frame.(type) {
 		case *DataFrame:
-			// Check for duplicate
-			if !session.HandleData(f) {
-				logf("Duplicate frame seq=%d, ignoring", f.Seq)
+			if debugFrames {
+				logf("[stdout] Received seq=%d %s", f.Seq, frameDigest(f.Payload))
+			}
+
+			// Check for duplicate (pass logf for debug output)
+			if !session.HandleData(f, logf) {
 				continue
 			}
 
@@ -747,14 +772,15 @@ func clientSessionToStdout(ctx context.Context, session *ClientSession, logf log
 
 		case *AckFrame:
 			// Handle ACK frames from old servers for backward compatibility
+			logf("[stdout] Received ACK seq=%d", f.Seq)
 			session.HandleAck(f)
 
 		case *CloseFrame:
-			logf("Received CLOSE: %s", f.Reason)
+			logf("[stdout] Received CLOSE: %s", f.Reason)
 			return nil
 
 		default:
-			logf("Unexpected frame type: %T", frame)
+			logf("[stdout] Unexpected frame type: %T", frame)
 		}
 	}
 }

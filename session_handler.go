@@ -104,9 +104,13 @@ func (h *SessionStreamHandler) handleResumeSession(ctx context.Context, stream *
 
 	// Replay any unacknowledged data we have
 	framesToReplay := sess.GetUnackedFrames(frame.LastRecvSeq)
-	h.logf("[stream %v from %s] Replaying %d frames", streamID, clientAddr, len(framesToReplay))
+	h.logf("[stream %v from %s] Replaying %d frames (client lastRecvSeq=%d, our lastSentSeq=%d)",
+		streamID, clientAddr, len(framesToReplay), frame.LastRecvSeq, ack.LastSentSeq)
 	encBuf := sess.EncodeBuffer()
-	for _, df := range framesToReplay {
+	for i, df := range framesToReplay {
+		if debugFrames {
+			h.logf("[stream %v from %s]   replay[%d]: seq=%d %s", streamID, clientAddr, i, df.Seq, frameDigest(df.Payload))
+		}
 		if err := df.Encode(stream, encBuf); err != nil {
 			return fmt.Errorf("failed to replay frame %d: %w", df.Seq, err)
 		}
@@ -184,14 +188,19 @@ func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.St
 
 		switch f := frame.(type) {
 		case *DataFrame:
-			// Check for duplicate
-			if !sess.HandleData(f) {
-				h.logf("[session %s] Duplicate frame seq=%d, ignoring", sess.ID, f.Seq)
+			if debugFrames {
+				h.logf("[session %s] Received seq=%d %s", sess.ID, f.Seq, frameDigest(f.Payload))
+			}
+
+			// Check for duplicate (pass logf for debug output)
+			if !sess.HandleData(f, h.logf) {
 				continue
 			}
 
 			// Write to sshd
+			h.logf("[session %s] Writing to sshd seq=%d", sess.ID, f.Seq)
 			if _, err := sess.SSHDWriter().Write(f.Payload); err != nil {
+				h.logf("[session %s] Failed to write to sshd: %v", sess.ID, err)
 				return fmt.Errorf("failed to write to sshd: %w", err)
 			}
 
@@ -250,6 +259,7 @@ func (h *SessionStreamHandler) sshdToStream(ctx context.Context, stream *quic.St
 		if err != nil {
 			if err == io.EOF {
 				// sshd closed the connection - send CLOSE frame
+				h.logf("[session %s] sshd closed connection (EOF), sending CLOSE frame", sess.ID)
 				closeFrame := &CloseFrame{Reason: "sshd closed"}
 				if encErr := closeFrame.Encode(stream, nil); encErr != nil {
 					h.logf("[session %s] Failed to send CLOSE frame: %v", sess.ID, encErr)
@@ -257,6 +267,7 @@ func (h *SessionStreamHandler) sshdToStream(ctx context.Context, stream *quic.St
 				h.manager.RemoveSession(sess.ID, "sshd closed")
 				return nil
 			}
+			h.logf("[session %s] sshd read error: %v", sess.ID, err)
 			return fmt.Errorf("failed to read from sshd: %w", err)
 		}
 
@@ -265,6 +276,10 @@ func (h *SessionStreamHandler) sshdToStream(ctx context.Context, stream *quic.St
 			frame, err := sess.PrepareData(buf[:n])
 			if err != nil {
 				return fmt.Errorf("failed to prepare data: %w", err)
+			}
+
+			if debugFrames {
+				h.logf("[session %s] Sending seq=%d %s", sess.ID, frame.Seq, frameDigest(frame.Payload))
 			}
 
 			if err := frame.Encode(stream, sess.EncodeBuffer()); err != nil {

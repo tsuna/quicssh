@@ -208,10 +208,12 @@ func (cs *ClientSession) IsConnected() bool {
 func (cs *ClientSession) Disconnect() {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
+	cs.logf("[ClientSession] Disconnect() called, connected=%v, stream=%v", cs.connected, cs.stream != nil)
 	cs.connected = false
 	if cs.stream != nil {
 		cs.stream.Close()
 		cs.stream = nil
+		cs.logf("[ClientSession] Stream closed")
 	}
 }
 
