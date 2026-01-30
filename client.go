@@ -282,6 +282,11 @@ func runClientSessionLayer(ctx context.Context, stream *quic.Stream, cfg *sessio
 		return fmt.Errorf("failed to create client session: %w", err)
 	}
 
+	// Ensure we close the QUIC connection gracefully on exit.
+	// This is important because with UDP/QUIC, the kernel won't automatically
+	// notify the server when we die (unlike TCP which sends RST).
+	defer clientSession.CloseQUIC("client shutdown")
+
 	// Install ACK hook on the initial QUIC connection
 	if cfg.initialConn != nil {
 		clientSession.SetQUICConn(cfg.initialConn)
