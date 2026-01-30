@@ -346,6 +346,7 @@ func (m *SessionManager) cleanupInactiveSessions(threshold time.Duration, reason
 // startCleanupLoop periodically cleans up expired sessions and handles signals.
 // SIGUSR1: dump all sessions to stderr
 // SIGUSR2: terminate all sessions inactive for more than 1 minute
+// SIGVTALRM: dump goroutine stack traces
 func (m *SessionManager) startCleanupLoop(ctx context.Context) {
 	ticker := time.NewTicker(m.sessionTimeout / 2)
 	defer ticker.Stop()
@@ -353,10 +354,13 @@ func (m *SessionManager) startCleanupLoop(ctx context.Context) {
 	// Set up signal handlers
 	sigUSR1 := make(chan os.Signal, 1)
 	sigUSR2 := make(chan os.Signal, 1)
+	sigVTALRM := make(chan os.Signal, 1)
 	signal.Notify(sigUSR1, syscall.SIGUSR1)
 	signal.Notify(sigUSR2, syscall.SIGUSR2)
+	signal.Notify(sigVTALRM, syscall.SIGVTALRM)
 	defer signal.Stop(sigUSR1)
 	defer signal.Stop(sigUSR2)
+	defer signal.Stop(sigVTALRM)
 
 	for {
 		select {
@@ -370,6 +374,8 @@ func (m *SessionManager) startCleanupLoop(ctx context.Context) {
 			m.dumpSessions()
 		case <-sigUSR2:
 			m.terminateInactiveSessions(1 * time.Minute)
+		case <-sigVTALRM:
+			dumpGoroutines()
 		}
 	}
 }

@@ -377,6 +377,17 @@ QUICSSH_VERBOSE=/tmp/quicssh.log ssh -o ProxyCommand="quicssh client --addr %h:4
 QUICSSH_VERBOSE=1 QUICSSH_DEBUG_FRAMES=1 ssh -o ProxyCommand="quicssh client --addr %h:4242 --session-layer" user@host
 ```
 
+### Signal Handlers
+
+Both client and server support the following signals for runtime diagnostics:
+
+| Signal      | Component | Description                                                        |
+| ----------- | --------- | ------------------------------------------------------------------ |
+| `SIGUSR1`   | Both      | Dump session statistics to stderr                                  |
+| `SIGUSR2`   | Server    | Terminate all sessions inactive for more than 1 minute             |
+| `SIGVTALRM` | Both      | Dump goroutine stack traces to stderr (useful for debugging hangs) |
+| `SIGHUP`    | Server    | Reload TLS certificate                                             |
+
 ## Resources
 
 - Original project: https://github.com/moul/quicssh

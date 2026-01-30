@@ -7,6 +7,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"runtime"
 	"runtime/debug"
 	"strings"
 	"sync"
@@ -15,6 +16,18 @@ import (
 	quic "github.com/quic-go/quic-go"
 	cli "github.com/urfave/cli/v2"
 )
+
+// dumpGoroutines prints stack traces of all goroutines to stderr.
+// This is triggered by SIGVTALRM and is useful for debugging hangs or deadlocks.
+// Uses \r\n for line breaks because the terminal may be in raw mode.
+func dumpGoroutines() {
+	buf := make([]byte, 1<<20) // 1MB buffer
+	n := runtime.Stack(buf, true)
+	// Replace \n with \r\n for raw terminal mode
+	stack := strings.ReplaceAll(string(buf[:n]), "\n", "\r\n")
+	log.Printf("=== Goroutine Dump (%d goroutines) ===\r\n%s\r\n=== End Goroutine Dump ===",
+		runtime.NumGoroutine(), stack)
+}
 
 // Buffer pool for readAndWrite to reduce GC pressure
 var bufPool = sync.Pool{
