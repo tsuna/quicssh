@@ -388,6 +388,33 @@ Both client and server support the following signals for runtime diagnostics:
 | `SIGVTALRM` | Both      | Dump goroutine stack traces to stderr (useful for debugging hangs) |
 | `SIGHUP`    | Server    | Reload TLS certificate                                             |
 
+## Development
+
+### Running Tests
+
+Run all tests:
+
+```bash
+go test ./...
+```
+
+Run the end-to-end tests specifically:
+
+```bash
+go test -v -run TestE2E -timeout 60s .
+```
+
+The end-to-end tests use fake UDP transports (channel-based) instead of real network sockets, allowing the entire QUIC + session layer stack to be tested in a controlled environment without network dependencies. Key test files:
+
+- `e2e_test.go`: End-to-end tests for basic connectivity and connection recovery
+- `fake_transport_test.go`: Fake UDP transport infrastructure using Go channels
+
+To run tests multiple times (useful for detecting race conditions or cleanup issues):
+
+```bash
+go test -v -run TestE2E -timeout 120s . -count 5
+```
+
 ## Resources
 
 - Original project: https://github.com/moul/quicssh

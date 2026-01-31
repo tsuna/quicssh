@@ -19,6 +19,60 @@ import (
 	cli "github.com/urfave/cli/v2"
 )
 
+// Transporter abstracts transport creation and address resolution.
+// This allows tests to inject fake transports instead of real UDP sockets.
+type Transporter interface {
+	// NewTransport creates a new QUIC transport.
+	// For real usage, this creates a UDP socket and wraps it in a quic.Transport.
+	// For testing, this can return a fake transport connected via channels.
+	NewTransport(ctx context.Context) (*quic.Transport, error)
+
+	// RemoteAddr returns the address to dial.
+	// For real usage, this resolves DNS to get the server IP.
+	// For testing, this returns a fixed address.
+	RemoteAddr(ctx context.Context) (net.Addr, error)
+}
+
+// UDPTransporter creates real UDP transports and resolves DNS for remote addresses.
+type UDPTransporter struct {
+	LocalAddr  string
+	RemoteHost string
+	RemotePort int
+	Logf       logFunc
+}
+
+// NewTransport creates a real UDP transport.
+func (t *UDPTransporter) NewTransport(ctx context.Context) (*quic.Transport, error) {
+	srcAddr, err := net.ResolveUDPAddr("udp", t.LocalAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to resolve local address: %w", err)
+	}
+
+	conn, err := net.ListenUDP("udp", srcAddr)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create UDP socket: %w", err)
+	}
+	t.Logf("Local UDP socket bound to %v", conn.LocalAddr())
+
+	// Configure the UDP socket to be resilient to network hiccups.
+	if err := configureUDPSocket(conn); err != nil {
+		t.Logf("Warning: failed to configure UDP socket for resilience: %v", err)
+	}
+
+	return &quic.Transport{Conn: conn}, nil
+}
+
+// RemoteAddr resolves DNS to get the server address.
+func (t *UDPTransporter) RemoteAddr(ctx context.Context) (net.Addr, error) {
+	remoteAddrStr := fmt.Sprintf("%s:%d", t.RemoteHost, t.RemotePort)
+	udpAddr, err := net.ResolveUDPAddr("udp", remoteAddrStr)
+	if err != nil {
+		return nil, fmt.Errorf("DNS resolution failed for %s: %w", t.RemoteHost, err)
+	}
+	t.Logf("Resolved %s to %v", t.RemoteHost, udpAddr)
+	return udpAddr, nil
+}
+
 func client(c *cli.Context) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -214,14 +268,17 @@ func client(c *cli.Context) error {
 	if sessionLayerEnabled {
 		logf("Session layer enabled")
 		cfg := &sessionLayerConfig{
-			remoteHost:  remoteHost,
-			remotePort:  remotePort,
-			localAddr:   c.String("localaddr"),
 			tlsConfig:   config,
 			quicConfig:  quicConfig,
 			initialConn: session,
 			bufferSize:  bufferSize,
-			logf:        logf,
+			transporter: &UDPTransporter{
+				LocalAddr:  c.String("localaddr"),
+				RemoteHost: remoteHost,
+				RemotePort: remotePort,
+				Logf:       logf,
+			},
+			logf: logf,
 		}
 		return runClientSessionLayer(ctx, stream, cfg)
 	}
@@ -260,13 +317,11 @@ func client(c *cli.Context) error {
 
 // sessionLayerConfig holds configuration for the session layer reconnection logic.
 type sessionLayerConfig struct {
-	remoteHost  string
-	remotePort  int
-	localAddr   string
 	tlsConfig   *tls.Config
 	quicConfig  *quic.Config
-	initialConn *quic.Conn // Initial QUIC connection (for ACK hook)
-	bufferSize  int        // Maximum size of send buffer
+	initialConn *quic.Conn  // Initial QUIC connection (for ACK hook)
+	bufferSize  int         // Maximum size of send buffer
+	transporter Transporter // Handles transport creation and address resolution
 	logf        logFunc
 }
 
@@ -514,23 +569,10 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 		elapsed := time.Since(startTime).Round(time.Second)
 		logf("Reconnection attempt %d (elapsed: %v, next backoff: %v)...", attempt, elapsed, backoff)
 
-		// Re-resolve DNS to get potentially new server IP
-		remoteAddrStr := fmt.Sprintf("%s:%d", cfg.remoteHost, cfg.remotePort)
-		udpAddr, err := net.ResolveUDPAddr("udp", remoteAddrStr)
+		// Get the remote address to dial (handles DNS resolution for production)
+		remoteAddr, err := cfg.transporter.RemoteAddr(ctx)
 		if err != nil {
-			logf("DNS resolution failed: %v", err)
-			if !sleepWithContext(ctx, backoff) {
-				return ctx.Err()
-			}
-			backoff = nextBackoff(backoff, maxBackoff, backoffFactor)
-			continue
-		}
-		logf("Resolved %s to %v", cfg.remoteHost, udpAddr)
-
-		// Create new UDP socket
-		srcAddr, err := net.ResolveUDPAddr("udp", cfg.localAddr)
-		if err != nil {
-			logf("Failed to resolve local address: %v", err)
+			logf("Failed to get remote address: %v", err)
 			if !sleepWithContext(ctx, backoff) {
 				return ctx.Err()
 			}
@@ -538,23 +580,16 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 			continue
 		}
 
-		conn, err := net.ListenUDP("udp", srcAddr)
+		// Create transport
+		transport, err := cfg.transporter.NewTransport(ctx)
 		if err != nil {
-			logf("Failed to create UDP socket: %v", err)
+			logf("Failed to create transport: %v", err)
 			if !sleepWithContext(ctx, backoff) {
 				return ctx.Err()
 			}
 			backoff = nextBackoff(backoff, maxBackoff, backoffFactor)
 			continue
 		}
-
-		// Configure socket for resilience
-		if err := configureUDPSocket(conn); err != nil {
-			logf("Warning: failed to configure UDP socket: %v", err)
-		}
-
-		// Create QUIC transport
-		transport := &quic.Transport{Conn: conn}
 
 		// Dial with timeout
 		// Use DialEarly for 0-RTT on reconnects, unless we've previously had 0-RTT rejected
@@ -562,16 +597,15 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 		dialCtx, dialCancel := context.WithTimeout(ctx, 10*time.Second)
 		var session *quic.Conn
 		if disable0RTT {
-			session, err = transport.Dial(dialCtx, udpAddr, cfg.tlsConfig, cfg.quicConfig)
+			session, err = transport.Dial(dialCtx, remoteAddr, cfg.tlsConfig, cfg.quicConfig)
 		} else {
-			session, err = transport.DialEarly(dialCtx, udpAddr, cfg.tlsConfig, cfg.quicConfig)
+			session, err = transport.DialEarly(dialCtx, remoteAddr, cfg.tlsConfig, cfg.quicConfig)
 		}
 		dialCancel()
 
 		if err != nil {
 			logf("QUIC dial failed: %v", err)
 			transport.Close()
-			conn.Close()
 			if !sleepWithContext(ctx, backoff) {
 				return ctx.Err()
 			}
@@ -589,8 +623,7 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 		if err != nil {
 			logf("Failed to open stream: %v", err)
 			session.CloseWithError(0, "stream open failed")
-			transport.Close()
-			conn.Close()
+			transport.Close() // Also closes underlying connection
 			if !sleepWithContext(ctx, backoff) {
 				return ctx.Err()
 			}
@@ -606,8 +639,7 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 			logf("Session resume failed: %v", err)
 			stream.Close()
 			session.CloseWithError(0, "resume failed")
-			transport.Close()
-			conn.Close()
+			transport.Close() // Also closes underlying connection
 
 			// If the server doesn't recognize our session (e.g., server restarted),
 			// there's no point retrying - the session is gone forever
@@ -643,8 +675,7 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 					logf("Failed to replay frame seq=%d: %v", frame.Seq, err)
 					stream.Close()
 					session.CloseWithError(0, "replay failed")
-					transport.Close()
-					conn.Close()
+					transport.Close() // Also closes underlying connection
 					if !sleepWithContext(ctx, backoff) {
 						return ctx.Err()
 					}

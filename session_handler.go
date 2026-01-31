@@ -160,9 +160,12 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 		errCh <- h.sshdToStream(loopCtx, stream, sess, clientAddr)
 	}()
 
-	// Wait for either goroutine to finish
+	// Wait for the first goroutine to finish, then cancel and wait for the second
 	err := <-errCh
 	cancel() // Cancel the other goroutine
+
+	// Wait for the second goroutine to finish to ensure clean shutdown
+	<-errCh
 
 	if err != nil && err != io.EOF && err != context.Canceled {
 		log.Printf("[stream %v] Session %s loop error: %v", streamID, sess, err)
