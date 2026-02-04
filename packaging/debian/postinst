@@ -1,0 +1,77 @@
+#!/bin/bash
+
+set -e
+
+# Source debconf library
+. /usr/share/debconf/confmodule
+
+case "$1" in
+    configure)
+        # Create quicssh configuration directory
+        if [ ! -d /etc/quicssh ]; then
+            mkdir -p /etc/quicssh
+            chmod 755 /etc/quicssh
+        fi
+
+        # Generate certificates if they don't exist
+        if [ ! -f /etc/quicssh/server.crt ] || [ ! -f /etc/quicssh/server.key ]; then
+            echo "Generating self-signed certificate for quicssh..."
+            
+            # Use the included certificate generation script
+            if [ -x /usr/share/quicssh/generate-cert.sh ]; then
+                cd /etc/quicssh
+                /usr/share/quicssh/generate-cert.sh server.crt server.key quicssh-server
+                
+                # Set proper permissions
+                chmod 644 /etc/quicssh/server.crt
+                chmod 600 /etc/quicssh/server.key
+                
+                echo "Certificate generated at /etc/quicssh/server.crt"
+                echo "Private key generated at /etc/quicssh/server.key"
+                echo ""
+                echo "WARNING: This is a self-signed certificate suitable for testing only."
+                echo "For production use, replace with a proper certificate from a trusted CA."
+            else
+                echo "Warning: Could not generate certificate automatically."
+                echo "Please generate certificates manually and place them at:"
+                echo "  /etc/quicssh/server.crt"
+                echo "  /etc/quicssh/server.key"
+            fi
+        fi
+
+        # Ensure proper permissions on certificate files if they exist
+        if [ -f /etc/quicssh/server.crt ]; then
+            chmod 644 /etc/quicssh/server.crt
+        fi
+        if [ -f /etc/quicssh/server.key ]; then
+            chmod 600 /etc/quicssh/server.key
+        fi
+
+        # Reload systemd daemon
+        systemctl daemon-reload
+
+        # Enable the service (but don't start it automatically)
+        systemctl enable quicssh.service
+
+        echo ""
+        echo "quicssh has been installed and enabled."
+        echo "To start the service, run: sudo systemctl start quicssh"
+        echo "To check status, run: sudo systemctl status quicssh"
+        echo ""
+        echo "Default configuration: /usr/share/quicssh/default.conf"
+        echo "To override settings, create /etc/default/quicssh"
+        echo "Certificates are located in /etc/quicssh/"
+        ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+        ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

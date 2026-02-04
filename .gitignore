@@ -26,3 +26,16 @@ gin-bin
 quicssh
 server.crt
 server.key
+
+# Debian build artifacts
+packaging/debian/debhelper-build-stamp
+packaging/debian/files
+packaging/debian/quicssh.debhelper.log
+packaging/debian/quicssh.postrm.debhelper
+packaging/debian/quicssh.substvars
+packaging/debian/.debhelper/
+packaging/debian/quicssh/
+packaging/debian/debian
+
+# Arch Linux build artifacts
+packaging/arch/build/

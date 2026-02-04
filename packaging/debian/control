@@ -1,0 +1,36 @@
+Source: quicssh
+Section: net
+Priority: optional
+Maintainer: Benoît Sigoure <tsuna@lrde.epita.fr>
+Build-Depends: debhelper-compat (= 13),
+               golang-go (>= 2:1.25~) | golang-1.25-go
+Standards-Version: 4.6.2
+Homepage: https://github.com/tsuna/quicssh
+Vcs-Git: https://github.com/tsuna/quicssh.git
+Vcs-Browser: https://github.com/tsuna/quicssh
+Rules-Requires-Root: no
+
+Package: quicssh
+Architecture: any
+Depends: ${misc:Depends},
+         ${shlibs:Depends},
+         systemd,
+         openssl,
+         ca-certificates
+Suggests: openssh-server
+Description: QUIC-based SSH proxy server and client
+ quicssh is a QUIC proxy that allows to use QUIC to connect to an SSH server
+ without needing to patch the client or the server.
+ .
+ This fork includes:
+  - Session persistence across network changes (laptop sleep, VPN reconnect)
+  - Network-aware reconnection with platform-specific monitoring
+  - Updated dependencies with latest security patches
+  - Optimized data transfer throughput for bulk operations (SCP, SFTP)
+  - Configurable idle timeout for flaky connections
+  - TLS certificate verification support and reloading certs at runtime
+  - NAT punching support
+  - Custom SSH daemon address
+ .
+ The package includes a systemd service for running quicssh server as a daemon
+ with proper security hardening and automatic certificate management.

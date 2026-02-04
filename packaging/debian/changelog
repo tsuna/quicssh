@@ -1,0 +1,13 @@
+quicssh (1.2.0-1) unstable; urgency=medium
+
+  * Initial Debian package release
+  * Added systemd service with security hardening
+  * Includes automatic certificate management
+  * Optimized for bulk data transfers (SCP, SFTP)
+  * Updated dependencies with latest security patches
+  * Added configurable idle timeout for flaky connections
+  * TLS certificate verification support and runtime reloading
+  * NAT punching support
+  * Custom SSH daemon address configuration
+
+ -- Benoît Sigoure <tsuna@lrde.epita.fr>  Sun, 01 Dec 2024 12:00:00 +0000

@@ -1,0 +1,66 @@
+[Unit]
+Description=QUIC-based SSH Proxy Server (quicssh)
+Documentation=https://github.com/tsuna/quicssh
+After=network.target
+
+[Service]
+# Service Type: simple means the main process is the service itself.
+Type=simple
+
+# Use dynamic user for security
+DynamicUser=yes
+
+# Load vendor defaults first, then admin overrides
+# Vendor defaults in /usr (replaced on package upgrade)
+EnvironmentFile=/usr/share/quicssh/default.conf
+# Admin overrides in /etc (preserved across upgrades, optional)
+EnvironmentFile=-/etc/default/quicssh
+
+# Load TLS credentials securely via systemd credentials (systemd 247+)
+# This allows DynamicUser to access the private key without world-readable permissions
+# Note: LoadCredential doesn't support variable expansion, so paths are hardcoded
+# To use different paths, create a drop-in file with override
+LoadCredential=server.crt:/etc/quicssh/server.crt
+LoadCredential=server.key:/etc/quicssh/server.key
+
+# Main Execution Command:
+# Use %d to reference the credentials directory
+ExecStart=/usr/bin/quicssh server \
+  --bind ${QUICSSH_BIND} \
+  --sshdaddr ${QUICSSH_SSHD_ADDR} \
+  --session-layer \
+  --session-timeout ${QUICSSH_SESSION_TIMEOUT} \
+  --cert %d/server.crt \
+  --key %d/server.key
+
+# Restart Policy: Ensure the service automatically restarts if it crashes
+Restart=always
+RestartSec=5
+
+# Security hardening
+CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+PrivateDevices=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=yes
+ProtectKernelTunables=yes
+ProtectProc=invisible
+ProtectSystem=strict
+# Restrict to only the address families required (local and network)
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+RestrictNamespaces=yes
+RestrictRealtime=yes
+SystemCallArchitectures=native
+# Limit which system calls the process can make (a strong security measure)
+SystemCallFilter=@system-service
+SystemCallFilter=~@resources @privileged
+
+[Install]
+WantedBy=multi-user.target
