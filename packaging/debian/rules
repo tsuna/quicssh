@@ -1,0 +1,41 @@
+#!/usr/bin/make -f
+
+# Build using system Go (requires Go 1.25+)
+# Use scripts/build-deb-docker.sh to build in a Docker container with Go 1.25
+
+export DH_GOLANG_EXCLUDES := vendor
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	@echo "Using Go version:"
+	go version
+
+override_dh_auto_build:
+	GOTOOLCHAIN=local go build -buildvcs=false -ldflags="-s -w" -o quicssh .
+
+override_dh_auto_install:
+	# Install the binary to the correct location
+	mkdir -p debian/quicssh/usr/bin
+	cp $(CURDIR)/quicssh debian/quicssh/usr/bin/
+	# Install certificate generation script
+	mkdir -p debian/quicssh/usr/share/quicssh
+	cp $(CURDIR)/generate-cert.sh debian/quicssh/usr/share/quicssh/
+	chmod +x debian/quicssh/usr/share/quicssh/generate-cert.sh
+	# Install systemd service file
+	mkdir -p debian/quicssh/usr/lib/systemd/system
+	cp $(CURDIR)/debian/quicssh.service debian/quicssh/usr/lib/systemd/system/
+	# Install vendor default configuration (replaced on upgrade)
+	# Admin overrides go in /etc/default/quicssh (not shipped, created by admin)
+	cp $(CURDIR)/debian/quicssh.vendor-default debian/quicssh/usr/share/quicssh/default.conf
+
+override_dh_installsystemd:
+	dh_installsystemd --name=quicssh
+
+override_dh_auto_test:
+	# Skip tests for now as they may require network access
+
+override_dh_auto_clean:
+	rm -f $(CURDIR)/quicssh
+	dh_auto_clean

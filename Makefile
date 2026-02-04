@@ -17,3 +17,11 @@ release:
 	goreleaser --snapshot --skip-publish --rm-dist
 	@echo -n "Do you want to release? [y/N] " && read ans && [ $${ans:-N} = y ]
 	goreleaser --rm-dist
+
+.PHONY: deb
+deb:
+	./packaging/build.sh --deb
+
+.PHONY: pkg
+pkg:
+	./packaging/build.sh --pkg

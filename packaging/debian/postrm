@@ -1,0 +1,30 @@
+#!/bin/bash
+
+set -e
+
+case "$1" in
+    purge)
+        # Remove configuration directory and certificates on purge
+        if [ -d /etc/quicssh ]; then
+            echo "Removing quicssh configuration directory..."
+            rm -rf /etc/quicssh
+        fi
+
+        # Reload systemd daemon to remove the service file
+        systemctl daemon-reload
+        ;;
+
+    remove|upgrade|failed-upgrade|abort-install|abort-upgrade|disappear)
+        # Reload systemd daemon
+        systemctl daemon-reload
+        ;;
+
+    *)
+        echo "postrm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

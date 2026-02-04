@@ -1,0 +1,112 @@
+quicssh for Debian
+==================
+
+This package provides the quicssh QUIC-based SSH proxy with systemd integration
+and automatic certificate management.
+
+Installation and Setup
+----------------------
+
+After installation, the package will:
+
+1. Create the configuration directory `/etc/quicssh/`
+2. Generate self-signed certificates if none exist
+3. Install and enable the systemd service
+
+Starting the Service
+--------------------
+
+The service is enabled but not started automatically. To start it:
+
+    sudo systemctl start quicssh
+
+To enable automatic startup on boot:
+
+    sudo systemctl enable quicssh
+
+Configuration
+-------------
+
+Default settings are in `/usr/share/quicssh/default.conf` (vendor defaults).
+To override settings, create `/etc/default/quicssh` with only the variables
+you want to change:
+
+    # Example: Change bind port to 443
+    echo 'QUICSSH_BIND="0.0.0.0:443"' | sudo tee /etc/default/quicssh
+
+Available settings:
+
+- QUICSSH_BIND: Bind address (default: 0.0.0.0:60666)
+- QUICSSH_SSHD_ADDR: SSH daemon address (default: localhost:22)
+- QUICSSH_SESSION_TIMEOUT: Session timeout (default: 168h)
+
+TLS certificate paths are configured in the systemd service file (default:
+`/etc/quicssh/server.crt` and `/etc/quicssh/server.key`). To use different
+paths, create a systemd drop-in:
+
+    sudo systemctl edit quicssh
+
+And add:
+
+    [Service]
+    LoadCredential=server.crt:/path/to/your/cert.crt
+    LoadCredential=server.key:/path/to/your/key.key
+
+After changing configuration, restart the service:
+
+    sudo systemctl restart quicssh
+
+Certificate Management
+----------------------
+
+The package automatically generates self-signed certificates during installation.
+For production use, replace these with proper certificates:
+
+1. Place your certificate at `/etc/quicssh/server.crt`
+2. Place your private key at `/etc/quicssh/server.key`
+3. Ensure proper permissions:
+   - Certificate: `chmod 644 /etc/quicssh/server.crt`
+   - Private key: `chmod 600 /etc/quicssh/server.key`
+4. Restart the service: `sudo systemctl restart quicssh`
+
+To regenerate self-signed certificates:
+
+    sudo /usr/share/quicssh/generate-cert.sh /etc/quicssh/server.crt /etc/quicssh/server.key
+
+Client Usage
+------------
+
+To use the quicssh client with the server:
+
+    ssh -o ProxyCommand="quicssh client --addr %h:60666 --servercert /etc/quicssh/server.crt" user@hostname
+
+For insecure mode (testing only):
+
+    ssh -o ProxyCommand="quicssh client --addr %h:60666 --insecure" user@hostname
+
+Security Considerations
+-----------------------
+
+The systemd service runs with extensive security hardening:
+- Dynamic user (no persistent user account)
+- Restricted system calls and capabilities
+- Read-only filesystem access except for certificates
+- Network namespace restrictions
+
+The default configuration uses port 60666. Ensure this port is open in your
+firewall if accessing from remote hosts.
+
+Troubleshooting
+---------------
+
+Check service status:
+    sudo systemctl status quicssh
+
+View logs:
+    sudo journalctl -u quicssh -f
+
+Test certificate:
+    openssl x509 -in /etc/quicssh/server.crt -text -noout
+
+For more information, see the upstream documentation at:
+https://github.com/tsuna/quicssh
