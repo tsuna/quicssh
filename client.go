@@ -317,12 +317,13 @@ func client(c *cli.Context) error {
 
 // sessionLayerConfig holds configuration for the session layer reconnection logic.
 type sessionLayerConfig struct {
-	tlsConfig   *tls.Config
-	quicConfig  *quic.Config
-	initialConn *quic.Conn  // Initial QUIC connection (for ACK hook)
-	bufferSize  int         // Maximum size of send buffer
-	transporter Transporter // Handles transport creation and address resolution
-	logf        logFunc
+	tlsConfig     *tls.Config
+	quicConfig    *quic.Config
+	initialConn   *quic.Conn  // Initial QUIC connection (for ACK hook)
+	bufferSize    int         // Maximum size of send buffer
+	transporter   Transporter // Handles transport creation and address resolution
+	logf          logFunc
+	networkEvents <-chan NetworkEvent // Channel for network change events (optional)
 }
 
 // runClientSessionLayer runs the client with session layer protocol.
@@ -365,6 +366,18 @@ type stdinData struct {
 // runSessionLoopWithReconnect runs the bidirectional data flow and handles reconnection.
 func runSessionLoopWithReconnect(ctx context.Context, clientSession *ClientSession, cfg *sessionLayerConfig) error {
 	logf := cfg.logf
+
+	// Start network monitor for detecting network changes during reconnection.
+	// This allows us to immediately retry when network comes back up instead of
+	// waiting for the backoff timer.
+	networkMonitor := NewNetworkMonitor(false) // verbose=false to avoid noise
+	if err := networkMonitor.Start(ctx); err != nil {
+		logf("Warning: failed to start network monitor: %v (reconnection will use backoff only)", err)
+		// Continue without network monitoring - reconnection will still work via backoff
+	} else {
+		cfg.networkEvents = networkMonitor.Events()
+		defer networkMonitor.Stop()
+	}
 
 	// Set up signal handlers for diagnostics:
 	// - SIGUSR1: dump session stats
@@ -547,13 +560,15 @@ func containsImpl(s, substr string) bool {
 func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *sessionLayerConfig) error {
 	logf := cfg.logf
 
-	const (
-		initialBackoff = 1 * time.Second
-		maxBackoff     = 10 * time.Second
-		backoffFactor  = 1.3
-	)
+	backoff := &backoffState{
+		current:       1 * time.Second,
+		initial:       1 * time.Second,
+		max:           10 * time.Second,
+		factor:        1.3,
+		networkEvents: cfg.networkEvents,
+		logf:          logf,
+	}
 
-	backoff := initialBackoff
 	attempt := 0
 	startTime := time.Now()
 	disable0RTT := false // Set to true after 0-RTT rejection to avoid repeated failures
@@ -567,16 +582,15 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 		}
 
 		elapsed := time.Since(startTime).Round(time.Second)
-		logf("Reconnection attempt %d (elapsed: %v, next backoff: %v)...", attempt, elapsed, backoff)
+		logf("Reconnection attempt %d (elapsed: %v, next backoff: %v)...", attempt, elapsed, backoff.current)
 
 		// Get the remote address to dial (handles DNS resolution for production)
 		remoteAddr, err := cfg.transporter.RemoteAddr(ctx)
 		if err != nil {
 			logf("Failed to get remote address: %v", err)
-			if !sleepWithContext(ctx, backoff) {
+			if !backoff.sleepAndUpdate(ctx) {
 				return ctx.Err()
 			}
-			backoff = nextBackoff(backoff, maxBackoff, backoffFactor)
 			continue
 		}
 
@@ -584,10 +598,9 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 		transport, err := cfg.transporter.NewTransport(ctx)
 		if err != nil {
 			logf("Failed to create transport: %v", err)
-			if !sleepWithContext(ctx, backoff) {
+			if !backoff.sleepAndUpdate(ctx) {
 				return ctx.Err()
 			}
-			backoff = nextBackoff(backoff, maxBackoff, backoffFactor)
 			continue
 		}
 
@@ -606,10 +619,9 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 		if err != nil {
 			logf("QUIC dial failed: %v", err)
 			transport.Close()
-			if !sleepWithContext(ctx, backoff) {
+			if !backoff.sleepAndUpdate(ctx) {
 				return ctx.Err()
 			}
-			backoff = nextBackoff(backoff, maxBackoff, backoffFactor)
 			continue
 		}
 
@@ -624,10 +636,9 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 			logf("Failed to open stream: %v", err)
 			session.CloseWithError(0, "stream open failed")
 			transport.Close() // Also closes underlying connection
-			if !sleepWithContext(ctx, backoff) {
+			if !backoff.sleepAndUpdate(ctx) {
 				return ctx.Err()
 			}
-			backoff = nextBackoff(backoff, maxBackoff, backoffFactor)
 			continue
 		}
 
@@ -656,10 +667,9 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 				continue
 			}
 
-			if !sleepWithContext(ctx, backoff) {
+			if !backoff.sleepAndUpdate(ctx) {
 				return ctx.Err()
 			}
-			backoff = nextBackoff(backoff, maxBackoff, backoffFactor)
 			continue
 		}
 
@@ -667,6 +677,7 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 		if len(framesToReplay) > 0 {
 			logf("Replaying %d unacknowledged frames...", len(framesToReplay))
 			encBuf := clientSession.EncodeBuffer()
+			replayFailed := false
 			for i, frame := range framesToReplay {
 				if debugFrames {
 					logf("  replay[%d]: seq=%d %s", i, frame.Seq, frameDigest(frame.Payload))
@@ -676,12 +687,15 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 					stream.Close()
 					session.CloseWithError(0, "replay failed")
 					transport.Close() // Also closes underlying connection
-					if !sleepWithContext(ctx, backoff) {
+					if !backoff.sleepAndUpdate(ctx) {
 						return ctx.Err()
 					}
-					backoff = nextBackoff(backoff, maxBackoff, backoffFactor)
-					continue
+					replayFailed = true
+					break
 				}
+			}
+			if replayFailed {
+				continue
 			}
 			logf("Replay complete")
 		}
@@ -709,6 +723,32 @@ func nextBackoff(current, maxBackoff time.Duration, factor float64) time.Duratio
 	return next
 }
 
+// backoffState manages exponential backoff with network event awareness.
+type backoffState struct {
+	current       time.Duration
+	initial       time.Duration
+	max           time.Duration
+	factor        float64
+	networkEvents <-chan NetworkEvent
+	logf          logFunc
+}
+
+// sleepAndUpdate sleeps for the current backoff duration, then updates the backoff.
+// If a network event wakes us up early, the backoff is reset to initial.
+// Returns false if the context was canceled (caller should return ctx.Err()).
+func (b *backoffState) sleepAndUpdate(ctx context.Context) bool {
+	ok, eventType := sleepWithNetworkEvents(ctx, b.current, b.networkEvents, b.logf)
+	if !ok {
+		return false
+	}
+	if eventType != "" {
+		b.current = b.initial // Reset backoff on network event
+	} else {
+		b.current = nextBackoff(b.current, b.max, b.factor)
+	}
+	return true
+}
+
 // sleepWithContext sleeps for the given duration or until the context is canceled.
 // Returns true if the sleep completed, false if the context was canceled.
 func sleepWithContext(ctx context.Context, d time.Duration) bool {
@@ -717,6 +757,41 @@ func sleepWithContext(ctx context.Context, d time.Duration) bool {
 		return true
 	case <-ctx.Done():
 		return false
+	}
+}
+
+// sleepWithNetworkEvents sleeps for the given duration, but wakes up early if:
+// - The context is canceled (returns false, "")
+// - A network event indicates connectivity may be restored (returns true, event type)
+// - The sleep duration completes (returns true, "")
+func sleepWithNetworkEvents(ctx context.Context, d time.Duration, networkEvents <-chan NetworkEvent, logf logFunc) (bool, string) {
+	if networkEvents == nil {
+		// No network monitoring, fall back to simple sleep
+		return sleepWithContext(ctx, d), ""
+	}
+
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			return true, ""
+		case <-ctx.Done():
+			return false, ""
+		case event, ok := <-networkEvents:
+			if !ok {
+				// Channel closed, fall back to timer
+				networkEvents = nil
+				continue
+			}
+			// Wake up on link_up, addr_add, or route_add events - these indicate network may be available
+			if event.Type == "link_up" || event.Type == "addr_add" || event.Type == "route_add" {
+				logf("Network event: %s on %s - retrying immediately", event.Type, event.Interface)
+				return true, event.Type
+			}
+			// Ignore link_down and addr_del events - we're already trying to reconnect
+		}
 	}
 }
 
