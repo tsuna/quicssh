@@ -5,6 +5,8 @@ builds:
   -
     goos: [linux, darwin, windows]
     goarch: [386, amd64, arm, arm64]
+    ldflags:
+      - -s -w
 archives:
   - wrap_in_directory: true
 checksum:
@@ -17,6 +19,7 @@ changelog:
     exclude:
     - '^docs:'
     - '^test:'
+
 brew:
   name: quicssh
   github:

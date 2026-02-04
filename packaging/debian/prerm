@@ -1,0 +1,31 @@
+#!/bin/bash
+
+set -e
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        # Stop the service if it's running
+        if systemctl is-active --quiet quicssh.service; then
+            echo "Stopping quicssh service..."
+            systemctl stop quicssh.service
+        fi
+
+        # Disable the service
+        if systemctl is-enabled --quiet quicssh.service; then
+            echo "Disabling quicssh service..."
+            systemctl disable quicssh.service
+        fi
+        ;;
+
+    failed-upgrade)
+        ;;
+
+    *)
+        echo "prerm called with unknown argument \`$1'" >&2
+        exit 1
+        ;;
+esac
+
+#DEBHELPER#
+
+exit 0

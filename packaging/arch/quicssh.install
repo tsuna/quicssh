@@ -1,0 +1,28 @@
+post_install() {
+    # Generate certificates if they don't exist
+    if [[ ! -f /etc/quicssh/server.crt ]] || [[ ! -f /etc/quicssh/server.key ]]; then
+        echo "Generating self-signed TLS certificate..."
+        /usr/share/quicssh/generate-cert.sh /etc/quicssh/server.crt /etc/quicssh/server.key
+        chmod 644 /etc/quicssh/server.crt
+        chmod 600 /etc/quicssh/server.key
+    fi
+    systemctl daemon-reload
+    echo ""
+    echo "quicssh has been installed."
+    echo "To start the service: systemctl start quicssh"
+    echo "To enable on boot: systemctl enable quicssh"
+}
+
+post_upgrade() {
+    systemctl daemon-reload
+}
+
+pre_remove() {
+    systemctl stop quicssh 2>/dev/null || true
+    systemctl disable quicssh 2>/dev/null || true
+}
+
+post_remove() {
+    systemctl daemon-reload
+}
+

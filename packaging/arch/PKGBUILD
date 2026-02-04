@@ -1,0 +1,53 @@
+# Maintainer: Benoît Sigoure <tsuna@lrde.epita.fr>
+pkgname=quicssh
+pkgver=1.2.0
+pkgrel=1
+pkgdesc="QUIC-based SSH proxy server and client"
+arch=('x86_64' 'aarch64')
+url="https://github.com/tsuna/quicssh"
+license=('Apache-2.0')
+depends=('glibc')
+makedepends=('go>=1.25')
+optdepends=('openssh: for SSH server functionality')
+backup=('etc/quicssh/server.crt' 'etc/quicssh/server.key')
+install=quicssh.install
+
+# For local builds via packaging/build.sh, source is empty (builds from current dir)
+# For AUR, uncomment the source line below:
+# source=("${pkgname}-${pkgver}.tar.gz::https://github.com/tsuna/quicssh/archive/refs/tags/v${pkgver}.tar.gz")
+# sha256sums=('SKIP')
+source=()
+sha256sums=()
+
+# Project root: startdir is packaging/arch/, so go up two levels
+_projroot="${startdir}/../.."
+
+build() {
+    cd "${_projroot}"
+    export CGO_ENABLED=0
+    go build -ldflags="-s -w" -o quicssh .
+}
+
+package() {
+    cd "${_projroot}"
+
+    # Install binary
+    install -Dm755 quicssh "${pkgdir}/usr/bin/quicssh"
+
+    # Install systemd service
+    install -Dm644 packaging/debian/quicssh.service "${pkgdir}/usr/lib/systemd/system/quicssh.service"
+
+    # Install vendor defaults
+    install -Dm644 packaging/debian/quicssh.vendor-default "${pkgdir}/usr/share/quicssh/default.conf"
+
+    # Install certificate generation script
+    install -Dm755 generate-cert.sh "${pkgdir}/usr/share/quicssh/generate-cert.sh"
+
+    # Create config directory
+    install -dm755 "${pkgdir}/etc/quicssh"
+
+    # Install documentation
+    install -Dm644 README.md "${pkgdir}/usr/share/doc/${pkgname}/README.md"
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}
+
