@@ -140,8 +140,8 @@ func TestClientSession_Resume(t *testing.T) {
 	cs.PrepareData([]byte("data1")) // seq 1
 	cs.PrepareData([]byte("data2")) // seq 2
 	cs.PrepareData([]byte("data3")) // seq 3
-	cs.HandleData(&DataFrame{Seq: 1, Payload: []byte("recv1")})
-	cs.HandleData(&DataFrame{Seq: 2, Payload: []byte("recv2")})
+	_, _ = cs.HandleData(&DataFrame{Seq: 1, Payload: []byte("recv1")})
+	_, _ = cs.HandleData(&DataFrame{Seq: 2, Payload: []byte("recv2")})
 
 	// Create new stream for resume
 	stream := newMockStream()
@@ -268,7 +268,7 @@ func TestSessionManager_ResumeSession(t *testing.T) {
 	// Simulate some data exchange
 	sess.PrepareData([]byte("sent1")) // seq 1
 	sess.PrepareData([]byte("sent2")) // seq 2
-	sess.HandleData(&DataFrame{Seq: 1, Payload: []byte("recv1")})
+	_, _ = sess.HandleData(&DataFrame{Seq: 1, Payload: []byte("recv1")})
 
 	// Resume with client claiming they sent up to seq 2, received up to seq 0
 	// Simulate client reconnecting from a different port
@@ -382,8 +382,8 @@ func TestSession_ResumeState(t *testing.T) {
 	sess.PrepareData([]byte("c"))
 
 	// Receive some data
-	sess.HandleData(&DataFrame{Seq: 1, Payload: []byte("x")})
-	sess.HandleData(&DataFrame{Seq: 2, Payload: []byte("y")})
+	_, _ = sess.HandleData(&DataFrame{Seq: 1, Payload: []byte("x")})
+	_, _ = sess.HandleData(&DataFrame{Seq: 2, Payload: []byte("y")})
 
 	lastSent, lastRecv := sess.ResumeState()
 	if lastSent != 3 {

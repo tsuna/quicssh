@@ -140,7 +140,11 @@ func TestSessionHandleData(t *testing.T) {
 	sess, _ := NewSession(DefaultBufferSize)
 
 	// Receive data
-	if !sess.HandleData(&DataFrame{Seq: 1, Payload: []byte("a")}) {
+	isNew, err := sess.HandleData(&DataFrame{Seq: 1, Payload: []byte("a")})
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if !isNew {
 		t.Error("Expected new data, got duplicate")
 	}
 	if sess.LastRecvSeq() != 1 {
@@ -148,12 +152,30 @@ func TestSessionHandleData(t *testing.T) {
 	}
 
 	// Duplicate should return false
-	if sess.HandleData(&DataFrame{Seq: 1, Payload: []byte("a")}) {
+	isNew, err = sess.HandleData(&DataFrame{Seq: 1, Payload: []byte("a")})
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if isNew {
 		t.Error("Expected duplicate, got new data")
 	}
 
 	// New data
-	if !sess.HandleData(&DataFrame{Seq: 2, Payload: []byte("b")}) {
+	isNew, err = sess.HandleData(&DataFrame{Seq: 2, Payload: []byte("b")})
+	if err != nil {
+		t.Errorf("Unexpected error: %v", err)
+	}
+	if !isNew {
 		t.Error("Expected new data, got duplicate")
+	}
+
+	// Gap should return error
+	_, err = sess.HandleData(&DataFrame{Seq: 5, Payload: []byte("e")})
+	if err != ErrSequenceGap {
+		t.Errorf("Expected ErrSequenceGap, got %v", err)
+	}
+	// LastRecvSeq should not have changed
+	if sess.LastRecvSeq() != 2 {
+		t.Errorf("Expected LastRecvSeq 2 after gap, got %d", sess.LastRecvSeq())
 	}
 }
