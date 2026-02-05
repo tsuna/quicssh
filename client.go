@@ -803,8 +803,13 @@ func clientSessionToStdout(ctx context.Context, session *ClientSession, logf log
 				logf("[stdout] Received seq=%d %s", f.Seq, frameDigest(f.Payload))
 			}
 
-			// Check for duplicate (pass logf for debug output)
-			if !session.HandleData(f, logf) {
+			// Check for duplicate or gap (pass logf for debug output)
+			isNew, err := session.HandleData(f, logf)
+			if err != nil {
+				// Gap detected - need to reconnect and replay
+				return fmt.Errorf("sequence gap error: %w", err)
+			}
+			if !isNew {
 				continue
 			}
 

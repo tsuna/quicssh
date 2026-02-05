@@ -195,8 +195,16 @@ func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.St
 				h.logf("[session %s] Received seq=%d %s", sess.ID, f.Seq, frameDigest(f.Payload))
 			}
 
-			// Check for duplicate (pass logf for debug output)
-			if !sess.HandleData(f, h.logf) {
+			// Check for duplicate or gap (pass logf for debug output)
+			isNew, err := sess.HandleData(f, h.logf)
+			if err != nil {
+				// Gap detected - this shouldn't happen on the server side since
+				// the client is responsible for replaying missed frames.
+				// Log it and continue - the client will need to reconnect.
+				h.logf("[session %s] Sequence gap detected: %v", sess.ID, err)
+				return fmt.Errorf("sequence gap detected: %w", err)
+			}
+			if !isNew {
 				continue
 			}
 

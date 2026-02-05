@@ -275,10 +275,16 @@ func (s *Session) HandleAck(ack *AckFrame) (removedCount int, removedMinSeq, rem
 	return s.sendBuffer.AckUpTo(ack.Seq)
 }
 
+// ErrSequenceGap is returned when a gap is detected in the sequence numbers.
+// This indicates that frames were lost and a reconnect/replay is needed.
+var ErrSequenceGap = errors.New("sequence gap detected")
+
 // HandleData processes a received DATA frame.
-// Returns true if this is new data (not a duplicate), false if duplicate.
+// Returns (true, nil) if this is new data (not a duplicate).
+// Returns (false, nil) if this is a duplicate (skip it).
+// Returns (false, ErrSequenceGap) if a gap is detected (need to reconnect).
 // The logf parameter is optional - if provided, debug info will be logged.
-func (s *Session) HandleData(data *DataFrame, logf ...func(format string, args ...any)) bool {
+func (s *Session) HandleData(data *DataFrame, logf ...func(format string, args ...any)) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -288,19 +294,27 @@ func (s *Session) HandleData(data *DataFrame, logf ...func(format string, args .
 			logf[0]("[Session %s] HandleData: DUPLICATE seq=%d <= lastRecvSeq=%d, dropping",
 				s.ID, data.Seq, s.lastRecvSeq)
 		}
-		return false // Duplicate
+		return false, nil // Duplicate
+	}
+
+	// Check for gap - we expect the next sequence number to be lastRecvSeq+1
+	expectedSeq := s.lastRecvSeq + 1
+	if data.Seq > expectedSeq {
+		if len(logf) > 0 && logf[0] != nil {
+			logf[0]("[Session %s] HandleData: GAP DETECTED seq=%d but expected=%d (lastRecvSeq=%d), missing %d frames",
+				s.ID, data.Seq, expectedSeq, s.lastRecvSeq, data.Seq-expectedSeq)
+		}
+		return false, ErrSequenceGap
 	}
 
 	oldLastRecvSeq := s.lastRecvSeq
-	// Note: This simple implementation assumes in-order delivery.
-	// For out-of-order, we'd need a receive buffer too.
 	s.lastRecvSeq = data.Seq
 
 	if len(logf) > 0 && logf[0] != nil {
 		logf[0]("[Session %s] HandleData: NEW seq=%d (was lastRecvSeq=%d, now=%d)",
 			s.ID, data.Seq, oldLastRecvSeq, s.lastRecvSeq)
 	}
-	return true
+	return true, nil
 }
 
 // LastRecvSeq returns the last received sequence number.
