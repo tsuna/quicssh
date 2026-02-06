@@ -92,24 +92,42 @@ func (ss *ServerSession) CloseStream(reason string) {
 
 // CancelLoop cancels the current runSessionLoop (if any) and waits for it to exit.
 // This must be called before starting a new runSessionLoop to avoid race conditions.
-func (ss *ServerSession) CancelLoop() {
+// Returns true if the old loop exited cleanly, false if it timed out.
+func (ss *ServerSession) CancelLoop() bool {
 	ss.mu.Lock()
 	cancel := ss.loopCancel
 	done := ss.loopDone
+	stream := ss.stream
 	ss.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
 	}
+
+	// Close the old stream to force any blocked writes to fail immediately.
+	// This helps the old loop exit faster.
+	if stream != nil {
+		stream.Close()
+	}
+
+	// Set a deadline on the sshd connection to interrupt any blocked Read().
+	// This causes the sshdToStream goroutine to wake up and check ctx.Done().
+	_ = ss.sshdConn.SetReadDeadline(time.Now())
+
 	if done != nil {
 		// Wait for the old loop to exit with a timeout
 		select {
 		case <-done:
 			ss.logf("[session %s] Old loop exited cleanly", ss.ID)
+			// Clear the deadline so the new loop can read normally
+			_ = ss.sshdConn.SetReadDeadline(time.Time{})
+			return true
 		case <-time.After(5 * time.Second):
 			ss.logf("[session %s] Timeout waiting for old loop to exit", ss.ID)
+			return false
 		}
 	}
+	return true
 }
 
 // SetLoopContext stores the loop's cancel function and done channel.
@@ -273,7 +291,12 @@ func (m *SessionManager) HandleResumeSession(frame *ResumeSessionFrame, remoteAd
 	// This prevents race conditions where the old sshdToStream goroutine
 	// competes with the new one to read from sshd and allocate sequence numbers.
 	m.logf("[SessionManager] Cancelling old loop for session %s...", sess.ID)
-	sess.CancelLoop()
+	if !sess.CancelLoop() {
+		// Old loop didn't exit cleanly - this is dangerous because it could
+		// race with the new loop for sequence numbers and sshd reads.
+		// We must fail the resume to avoid data corruption.
+		return nil, nil, fmt.Errorf("old session loop did not exit cleanly, cannot safely resume")
+	}
 	m.logf("[SessionManager] Old loop cancelled for session %s", sess.ID)
 
 	return sess, ack, nil

@@ -271,6 +271,19 @@ func (h *SessionStreamHandler) sshdToStream(ctx context.Context, stream *quic.St
 
 		n, err := sess.SSHDReader().Read(buf)
 		if err != nil {
+			// Check if context is cancelled first - this takes priority.
+			// CancelLoop() sets a deadline on the sshd connection to interrupt
+			// this blocked read, so we check context here to exit cleanly.
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			// Check if this is a timeout caused by CancelLoop setting a deadline
+			if netErr, ok := err.(interface{ Timeout() bool }); ok && netErr.Timeout() {
+				// Loop back to check context.Done() at the top
+				continue
+			}
 			if err == io.EOF {
 				// sshd closed the connection - send CLOSE frame
 				h.logf("[session %s] sshd closed connection (EOF), sending CLOSE frame", sess.ID)
