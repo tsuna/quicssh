@@ -118,6 +118,9 @@ func (h *SessionStreamHandler) handleResumeSession(ctx context.Context, stream *
 		sess.RecordWrite(df.Seq)
 	}
 
+	// Record the reconnect for stats
+	sess.RecordReconnect()
+
 	// Run the session data loop
 	return h.runSessionLoop(stream, sess, clientAddr)
 }

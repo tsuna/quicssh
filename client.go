@@ -694,6 +694,9 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 			logf("QUIC session context done: %v", context.Cause(session.Context()))
 		}()
 
+		// Record the reconnect for stats
+		clientSession.RecordReconnect()
+
 		logf("Reconnection successful after %d attempts (%v elapsed)", attempt, time.Since(startTime).Round(time.Second))
 		return nil
 	}

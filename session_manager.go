@@ -405,9 +405,12 @@ func (m *SessionManager) dumpSessions() {
 		sess.mu.Unlock()
 
 		stats := sess.ackTracker.Stats()
+		reconnectCount, lastReconnect := sess.ReconnectStats()
 
-		m.logf("  Session %s: pid=%d (from=%q) idle=%v sendBuf=%s/%d frames (seq %d-%d) nextSendSeq=%d lastRecvSeq=%d",
+		m.logf("  Session %s: pid=%d (from=%q) idle=%v reconnects=%d (last: %s)",
 			sess, clientPID, grandparentProcess, idle.Round(time.Second),
+			reconnectCount, timeAgo(lastReconnect, now))
+		m.logf("    SendBuf: %s/%d frames (seq %d-%d) nextSendSeq=%d lastRecvSeq=%d",
 			fmtBytes(sendBufSize), sendBufFrames, sendBufMinSeq, sendBufMaxSeq,
 			nextSendSeq, lastRecvSeq)
 		m.logf("    ACKs: pending=%d, acked=%d, highest=%d",
