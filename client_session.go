@@ -247,6 +247,7 @@ func (cs *ClientSession) DumpStats() {
 	sendBufMinSeq := cs.Session.sendBuffer.MinSeq()
 	sendBufMaxSeq := cs.Session.sendBuffer.MaxSeq()
 	ackStats := cs.ackTracker.Stats()
+	reconnectCount, lastReconnect := cs.Session.ReconnectStats()
 
 	// Always log to stderr regardless of --verbose since this is triggered by SIGUSR1.
 	// Use \r\n because the terminal may be in raw mode (interactive SSH session),
@@ -256,7 +257,7 @@ func (cs *ClientSession) DumpStats() {
 		"\r\n=== Client Session Dump @ %s ===\r\n"+
 			"  SessionID: %s\r\n"+
 			"  ClientPID: %d (GrandparentProcess: %q)\r\n"+
-			"  Connected: %v\r\n"+
+			"  Connected: %v, Reconnects: %d (last: %s)\r\n"+
 			"  SendBuffer: %d bytes / %d frames (seq %d-%d)\r\n"+
 			"  LastSentSeq: %d\r\n"+
 			"  LastRecvSeq: %d\r\n"+
@@ -265,7 +266,8 @@ func (cs *ClientSession) DumpStats() {
 			"  QUIC Stats: RTT=%v (min=%v, σ=%v), sent=%s/%dpkts, recv=%s/%dpkts, lost=%s/%dpkts\r\n"+
 			"=== End Session Dump ===\r\n",
 		now.Format("2006/01/02 15:04:05"),
-		cs.Session.ID, cs.clientPID, cs.grandparentProcess, connected,
+		cs.Session.ID, cs.clientPID, cs.grandparentProcess,
+		connected, reconnectCount, timeAgo(lastReconnect, now),
 		sendBufSize, sendBufFrames, sendBufMinSeq, sendBufMaxSeq,
 		lastSent, lastRecv,
 		ackStats.PendingWrites, ackStats.AckedPackets, ackStats.HighestAcked,

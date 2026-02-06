@@ -33,6 +33,10 @@ type Session struct {
 	// Receive-side state
 	lastRecvSeq uint64 // Last sequence number received (for ACKs and resume)
 
+	// Reconnect tracking
+	reconnectCount    int       // Number of times the session has been resumed
+	lastReconnectTime time.Time // Time of the last reconnect (zero if never reconnected)
+
 	// Session state
 	closed      bool
 	closeReason string
@@ -361,6 +365,22 @@ func (s *Session) ResumeState() (lastSentSeq, lastRecvSeq uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.nextSendSeq - 1, s.lastRecvSeq
+}
+
+// RecordReconnect increments the reconnect counter and records the time.
+// Call this after a successful session resume.
+func (s *Session) RecordReconnect() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.reconnectCount++
+	s.lastReconnectTime = time.Now()
+}
+
+// ReconnectStats returns the number of reconnects and the time of the last reconnect.
+func (s *Session) ReconnectStats() (count int, lastTime time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.reconnectCount, s.lastReconnectTime
 }
 
 // fmtBytes formats bytes in human-readable form (e.g., "42b", "1.5KB", "2.3MB").
