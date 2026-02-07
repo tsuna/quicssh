@@ -151,6 +151,16 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 		close(loopDone)
 	}()
 
+	// Cleanup: if the loop exits with a fatal error (not just connection loss),
+	// remove the session so it doesn't linger forever
+	var loopErr error
+	defer func() {
+		if loopErr != nil && loopErr != io.EOF && loopErr != context.Canceled {
+			h.logf("[stream %v] Session %s failed with error, removing: %v", streamID, sess, loopErr)
+			h.manager.RemoveSession(sess.ID, fmt.Sprintf("session error: %v", loopErr))
+		}
+	}()
+
 	errCh := make(chan error, 2)
 
 	// Goroutine: QUIC stream -> sshd (with session layer)
@@ -164,17 +174,17 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 	}()
 
 	// Wait for the first goroutine to finish, then cancel and wait for the second
-	err := <-errCh
+	loopErr = <-errCh
 	cancel() // Cancel the other goroutine
 
 	// Wait for the second goroutine to finish to ensure clean shutdown
 	<-errCh
 
-	if err != nil && err != io.EOF && err != context.Canceled {
-		log.Printf("[stream %v] Session %s loop error: %v", streamID, sess, err)
+	if loopErr != nil && loopErr != io.EOF && loopErr != context.Canceled {
+		log.Printf("[stream %v] Session %s loop error: %v", streamID, sess, loopErr)
 	}
 
-	return err
+	return loopErr
 }
 
 // streamToSSHD reads frames from QUIC stream and writes data to sshd.
