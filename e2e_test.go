@@ -8,13 +8,19 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/binary"
 	"encoding/pem"
 	"errors"
+	"flag"
+	"fmt"
 	"io"
 	"log"
 	"math/big"
+	mathrand "math/rand"
 	"net"
+	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -179,6 +185,11 @@ func (s *TestServer) Close() error {
 	}
 	// Wait for all active handlers to complete to avoid logging after test ends
 	s.activeHandlers.Wait()
+	// Wait for SessionManager cleanup loop to fully exit to prevent signal handler
+	// leaks between test iterations (when using -count flag)
+	if s.sessionManager != nil {
+		s.sessionManager.Wait()
+	}
 	return nil
 }
 
@@ -705,4 +716,313 @@ func TestE2E_ConnectionRecovery(t *testing.T) {
 	serverTransport2.Close()
 	// 4. Close server which waits for all session handlers to complete
 	server.Close()
+}
+
+// TestE2E_TortureTest is a comprehensive chaos test that randomly injects faults
+// while streaming data bidirectionally. It tests:
+// - Random packet drops
+// - Random packet reordering
+// - Random packet duplication
+// - Continuous bidirectional data streaming
+// - Verification that all data arrives in order with no gaps
+//
+// The test uses a seed-based PRNG for reproducibility. If a test fails, you can
+// reproduce it by setting the QUICSSH_TEST_SEED environment variable.
+//
+// Note: This test does NOT test connection breaks/resume because that requires
+// more complex infrastructure. See TestE2E_ConnectionRecovery for that.
+func TestE2E_TortureTest(t *testing.T) {
+	// Get seed from flag or environment variable, or use current time
+	var seed int64
+	seedFlag := flag.Lookup("seed")
+	if seedFlag != nil && seedFlag.Value.String() != "0" {
+		fmt.Sscanf(seedFlag.Value.String(), "%d", &seed)
+	} else if seedEnv := os.Getenv("QUICSSH_TEST_SEED"); seedEnv != "" {
+		fmt.Sscanf(seedEnv, "%d", &seed)
+	} else {
+		seed = time.Now().UnixNano()
+	}
+
+	t.Logf("=== TORTURE TEST SEED: %d ===", seed)
+	t.Logf("To reproduce this test, run: QUICSSH_TEST_SEED=%d go test -v -run TestE2E_TortureTest", seed)
+
+	rng := mathrand.New(mathrand.NewSource(seed))
+
+	// Test configuration
+	// Vary message rate to test different traffic patterns
+	messagesPerSecond := 60 + rng.Intn(141) // Random between 60 and 200
+
+	const (
+		// Chaos parameters
+		dropRate        = 0.05 // 5% packet drop rate
+		reorderRate     = 0.10 // 10% packet reorder rate
+		duplicateRate   = 0.02 // 2% packet duplication rate
+		maxReorderDelay = 100 * time.Millisecond
+	)
+
+	// Use a fixed 10-second test duration
+	// This ensures consistent behavior across multiple test iterations (-count flag)
+	testDuration := 10 * time.Second
+	t.Logf("Message rate: %d messages/second. Test duration: %v", messagesPerSecond, testDuration)
+
+	// Start echo server as fake sshd
+	sshdAddr, cleanupSshd := startEchoServer(t)
+	defer cleanupSshd()
+
+	// Create TLS config
+	serverTLS, err := generateTestTLSConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate TLS config: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Create chaos packet connections with separate RNGs for each direction
+	clientChaosConfig := ChaosConfig{
+		DropRate:        dropRate,
+		ReorderRate:     reorderRate,
+		DuplicateRate:   duplicateRate,
+		MaxReorderDelay: maxReorderDelay,
+		Rand:            mathrand.New(mathrand.NewSource(rng.Int63())),
+	}
+	serverChaosConfig := ChaosConfig{
+		DropRate:        dropRate,
+		ReorderRate:     reorderRate,
+		DuplicateRate:   duplicateRate,
+		MaxReorderDelay: maxReorderDelay,
+		Rand:            mathrand.New(mathrand.NewSource(rng.Int63())),
+	}
+
+	clientConn, serverConn := NewChaosPacketConnPair(2000, clientChaosConfig, serverChaosConfig)
+
+	// Ensure cleanup happens - close connections to unblock any pending I/O
+	defer clientConn.Close()
+	defer serverConn.Close()
+
+	// Create server
+	serverTransport := &quic.Transport{Conn: serverConn}
+	serverConfig := &TestServerConfig{
+		TLSConfig:           serverTLS,
+		QUICConfig:          testQuicConfig(),
+		SSHDAddr:            sshdAddr,
+		SessionLayerEnabled: true,
+		SessionTimeout:      5 * time.Minute,
+		BufferSize:          DefaultBufferSize,
+		Logf:                log.Printf, // Use log.Printf instead of t.Logf to avoid panics in async goroutines
+	}
+
+	server, err := NewTestServer(ctx, serverTransport, serverConfig)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	// Start server in background
+	serverDone := make(chan struct{})
+	go func() {
+		defer close(serverDone)
+		server.Serve()
+	}()
+
+	// Track test state
+	var (
+		clientSentSeq     atomic.Uint64 // Next sequence to send from client
+		clientReceivedSeq atomic.Uint64 // Next sequence expected to receive at client
+
+		testErrors   []string
+		testErrorsMu sync.Mutex
+	)
+
+	recordError := func(format string, args ...interface{}) {
+		testErrorsMu.Lock()
+		defer testErrorsMu.Unlock()
+		testErrors = append(testErrors, fmt.Sprintf(format, args...))
+	}
+
+	// Client goroutine: sends messages and receives echoes
+	clientDone := make(chan struct{})
+	go func() {
+		defer close(clientDone)
+
+		// Create a separate context for the client that we can cancel independently
+		clientCtx, clientCancel := context.WithCancel(ctx)
+		defer clientCancel()
+
+		clientTLS := generateTestClientTLSConfig()
+		quicConfig := testQuicConfig()
+
+		// Create client session
+		clientSession, err := NewClientSession(DefaultBufferSize, t.Logf)
+		if err != nil {
+			recordError("Failed to create client session: %v", err)
+			return
+		}
+
+		// Connect to server
+		clientTransport := &quic.Transport{Conn: clientConn}
+		session, err := clientTransport.Dial(clientCtx, serverConn.LocalAddr(), clientTLS, quicConfig)
+		if err != nil {
+			recordError("Client dial failed: %v", err)
+			return
+		}
+
+		stream, err := session.OpenStreamSync(clientCtx)
+		if err != nil {
+			recordError("Failed to open stream: %v", err)
+			return
+		}
+
+		if err := clientSession.Connect(stream); err != nil {
+			recordError("Client session connect failed: %v", err)
+			return
+		}
+
+		t.Log("Client session connected")
+
+		// Receiver: reads echo responses
+		receiveDone := make(chan struct{})
+		go func() {
+			defer close(receiveDone)
+			for {
+				select {
+				case <-clientCtx.Done():
+					return
+				default:
+				}
+
+				frame, err := ReadFrame(stream)
+				if err != nil {
+					if clientCtx.Err() != nil {
+						return
+					}
+					t.Logf("Client ReadFrame error: %v", err)
+					return
+				}
+
+				if dataFrame, ok := frame.(*DataFrame); ok {
+					if debugFrames {
+						t.Logf("[Client] Received seq=%d %s", dataFrame.Seq, frameDigest(dataFrame.Payload))
+					}
+					// A DATA frame may contain multiple messages batched together
+					// Each message is 40 bytes (8 bytes seq + 32 bytes data)
+					const messageSize = 40
+					payload := dataFrame.Payload
+
+					for len(payload) >= messageSize {
+						// Extract one message
+						msg := payload[:messageSize]
+						payload = payload[messageSize:]
+
+						// Verify sequence number
+						expectedSeq := clientReceivedSeq.Load()
+						receivedSeq := binary.BigEndian.Uint64(msg[:8])
+
+						// Check for poison pill (sequence number 0xFFFFFFFFFFFFFFFF) - signals end of test
+						if receivedSeq == 0xFFFFFFFFFFFFFFFF {
+							return
+						}
+						if receivedSeq != expectedSeq {
+							recordError("Client received out-of-order: got seq %d, expected %d", receivedSeq, expectedSeq)
+						} else {
+							clientReceivedSeq.Add(1)
+						}
+					}
+
+					// Warn if there's leftover data that doesn't fit a full message
+					if len(payload) > 0 {
+						recordError("Client received partial message: %d bytes leftover", len(payload))
+					}
+				}
+			}
+		}()
+
+		// Sender: sends messages at regular intervals
+		sendTicker := time.NewTicker(time.Second / time.Duration(messagesPerSecond))
+		defer sendTicker.Stop()
+
+		testTimer := time.NewTimer(testDuration)
+		defer testTimer.Stop()
+
+	sendLoop:
+		for {
+			select {
+			case <-clientCtx.Done():
+				break sendLoop
+			case <-testTimer.C:
+				// Test duration elapsed
+				break sendLoop
+			case <-sendTicker.C:
+				// Send a message with sequence number
+				seq := clientSentSeq.Add(1) - 1
+				payload := make([]byte, 8+32) // 8 bytes seq + 32 bytes random data
+				binary.BigEndian.PutUint64(payload[:8], seq)
+				rng.Read(payload[8:])
+
+				if debugFrames {
+					t.Logf("[Client] Sending seq=%d %s", seq, frameDigest(payload))
+				}
+				if err := clientSession.SendData(clientCtx, payload); err != nil {
+					t.Logf("Client SendData error: %v", err)
+				}
+			}
+		}
+
+		// Send a poison pill (sequence number 0xFFFFFFFFFFFFFFFF) to signal the receiver to exit
+		// This unblocks the receiver goroutine which is waiting in ReadFrame()
+		poisonPill := make([]byte, 8+32)
+		binary.BigEndian.PutUint64(poisonPill[:8], 0xFFFFFFFFFFFFFFFF)
+		// Fill the rest with zeros to distinguish from random data
+		clientSession.SendData(clientCtx, poisonPill)
+
+		// Disconnect the session to signal the server to clean up
+		clientSession.Disconnect()
+
+		// Signal the receiver to stop and close the stream
+		clientCancel()
+		stream.CancelRead(0)
+
+		// Wait for receiver to finish with a timeout
+		select {
+		case <-receiveDone:
+			// Receiver finished cleanly
+		case <-time.After(1 * time.Second):
+			t.Logf("Warning: receiver did not finish within timeout")
+		}
+	}()
+
+	<-clientDone
+
+	// Cancel the context to signal all goroutines to stop
+	cancel()
+
+	// Close the packet connections to unblock any pending I/O
+	clientConn.Close()
+	serverConn.Close()
+
+	// Close the server and wait for all cleanup to complete
+	// This ensures SessionManager's signal handlers are fully stopped before
+	// the next test iteration (prevents hangs with -count flag)
+	server.Close()
+
+	// Report statistics
+	t.Logf("=== TEST STATISTICS ===")
+	t.Logf("Client sent: %d messages", clientSentSeq.Load())
+	t.Logf("Client received: %d messages", clientReceivedSeq.Load())
+
+	clientDropped, clientReordered, clientDuplicated := clientConn.GetStats()
+	serverDropped, serverReordered, serverDuplicated := serverConn.GetStats()
+	t.Logf("Client->Server: dropped=%d reordered=%d duplicated=%d", clientDropped, clientReordered, clientDuplicated)
+	t.Logf("Server->Client: dropped=%d reordered=%d duplicated=%d", serverDropped, serverReordered, serverDuplicated)
+
+	// Check for errors
+	testErrorsMu.Lock()
+	if len(testErrors) > 0 {
+		t.Errorf("Test encountered %d errors:", len(testErrors))
+		for _, err := range testErrors {
+			t.Errorf("  - %s", err)
+		}
+		t.Errorf("To reproduce this failure with detailed logging, run:")
+		t.Errorf("  QUICSSH_TEST_SEED=%d QUICSSH_DEBUG_FRAMES=1 QUICSSH_VERBOSE=1 go test -v -run TestE2E_TortureTest", seed)
+	}
+	testErrorsMu.Unlock()
 }

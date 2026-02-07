@@ -164,6 +164,9 @@ type SessionManager struct {
 	maxSessions    int           // Maximum number of concurrent sessions (0 = unlimited)
 	bufferSize     int           // Maximum size of send buffer per session
 
+	// Cleanup synchronization
+	cleanupDone chan struct{} // Closed when cleanup loop exits
+
 	logf logFunc
 }
 
@@ -175,6 +178,7 @@ func NewSessionManager(ctx context.Context, sshdAddr string, sessionTimeout time
 		sessionTimeout: sessionTimeout,
 		maxSessions:    maxSessions,
 		bufferSize:     bufferSize,
+		cleanupDone:    make(chan struct{}),
 		logf:           logf,
 	}
 	go m.startCleanupLoop(ctx)
@@ -377,6 +381,8 @@ func (m *SessionManager) cleanupInactiveSessions(threshold time.Duration, reason
 // SIGUSR2: terminate all sessions inactive for more than 1 minute
 // SIGVTALRM: dump goroutine stack traces
 func (m *SessionManager) startCleanupLoop(ctx context.Context) {
+	defer close(m.cleanupDone)
+
 	// Run cleanup at min(sessionTimeout/2, maxCleanupInterval).
 	// This ensures sessions are cleaned up promptly even with long timeouts,
 	// while not running too frequently for short timeouts.
@@ -414,6 +420,13 @@ func (m *SessionManager) startCleanupLoop(ctx context.Context) {
 			dumpGoroutines()
 		}
 	}
+}
+
+// Wait blocks until the cleanup loop has fully exited.
+// This should be called after canceling the SessionManager's context to ensure
+// proper cleanup before the next test iteration.
+func (m *SessionManager) Wait() {
+	<-m.cleanupDone
 }
 
 // dumpSessions prints information about all active sessions.
