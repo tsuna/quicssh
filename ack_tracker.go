@@ -75,14 +75,16 @@ func (t *AckTracker) OnPacketsAcked(packets []quic.PacketNumber) {
 		t.ackedPacketCount++
 	}
 
-	// Notify that there's QUIC activity (for keep-alive tracking)
-	if t.onActivity != nil {
-		t.onActivity()
-	}
-
 	// Find the highest pending sequence number and clear all
 	if len(t.pendingSeqs) == 0 {
+		// No pending writes - this is just a keep-alive ACK.
+		// Don't update lastActivity for keep-alives.
 		return
+	}
+
+	// Notify that there's actual data activity (not just keep-alive)
+	if t.onActivity != nil {
+		t.onActivity()
 	}
 
 	var highestSeq uint64
