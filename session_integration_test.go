@@ -42,16 +42,6 @@ func (m *mockStream) Close() error {
 	return nil
 }
 
-// Helper to create a connected pair of mock streams
-func newMockStreamPair() (*mockStream, *mockStream) {
-	client := newMockStream()
-	server := newMockStream()
-	// Connect them: client writes go to server reads, and vice versa
-	client.readBuf = server.writeBuf
-	server.readBuf = client.writeBuf
-	return client, server
-}
-
 func noopLogf(format string, args ...interface{}) {}
 
 // TestClientSession_Connect tests the NEW_SESSION handshake
