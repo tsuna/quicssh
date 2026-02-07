@@ -78,16 +78,23 @@ func TestAckTracker_OnActivity(t *testing.T) {
 		activityCount++
 	})
 
-	// ACK should trigger onActivity even without pending writes
+	// ACK without pending writes should NOT trigger onActivity (keep-alive)
 	tracker.OnPacketsAcked([]quic.PacketNumber{1})
+	if activityCount != 0 {
+		t.Errorf("Expected 0 activity callbacks for keep-alive ACK, got %d", activityCount)
+	}
+
+	// ACK with pending writes SHOULD trigger onActivity
+	tracker.RecordWrite(100)
+	tracker.OnPacketsAcked([]quic.PacketNumber{2})
 	if activityCount != 1 {
 		t.Errorf("Expected 1 activity callback, got %d", activityCount)
 	}
 
-	// Multiple ACKs should trigger multiple activity callbacks
-	tracker.OnPacketsAcked([]quic.PacketNumber{2, 3, 4})
-	if activityCount != 2 {
-		t.Errorf("Expected 2 activity callbacks, got %d", activityCount)
+	// ACK without pending writes again should not trigger
+	tracker.OnPacketsAcked([]quic.PacketNumber{3, 4})
+	if activityCount != 1 {
+		t.Errorf("Expected still 1 activity callback, got %d", activityCount)
 	}
 }
 

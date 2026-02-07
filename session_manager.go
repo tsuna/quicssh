@@ -14,6 +14,12 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
+const (
+	// Maximum interval between cleanup runs, regardless of session timeout.
+	// This prevents sessions from lingering too long with large timeouts.
+	maxCleanupInterval = 10 * time.Minute
+)
+
 // ServerSession represents a session on the server side.
 // It maintains the connection to sshd and session state across QUIC reconnects.
 type ServerSession struct {
@@ -371,7 +377,14 @@ func (m *SessionManager) cleanupInactiveSessions(threshold time.Duration, reason
 // SIGUSR2: terminate all sessions inactive for more than 1 minute
 // SIGVTALRM: dump goroutine stack traces
 func (m *SessionManager) startCleanupLoop(ctx context.Context) {
-	ticker := time.NewTicker(m.sessionTimeout / 2)
+	// Run cleanup at min(sessionTimeout/2, maxCleanupInterval).
+	// This ensures sessions are cleaned up promptly even with long timeouts,
+	// while not running too frequently for short timeouts.
+	cleanupInterval := m.sessionTimeout / 2
+	if cleanupInterval > maxCleanupInterval {
+		cleanupInterval = maxCleanupInterval
+	}
+	ticker := time.NewTicker(cleanupInterval)
 	defer ticker.Stop()
 
 	// Set up signal handlers
