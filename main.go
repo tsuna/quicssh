@@ -85,7 +85,7 @@ func main() {
 					&cli.StringFlag{Name: "key", Value: "", Usage: "path to TLS private key file"},
 					&cli.BoolFlag{Name: "verbose", Aliases: []string{"v"}, Value: false, Usage: "enable verbose logging"},
 					&cli.BoolFlag{Name: "session-layer", Value: false, Usage: "enable session layer for connection resilience"},
-					&cli.DurationFlag{Name: "session-timeout", Value: 30 * time.Minute, Usage: "session timeout for reconnection"},
+					&cli.DurationFlag{Name: "session-timeout", Value: 24 * time.Hour, Usage: "session timeout for reconnection"},
 					&cli.IntFlag{Name: "max-sessions", Value: 1024, Usage: "maximum number of concurrent sessions (0 = unlimited)"},
 					&cli.IntFlag{Name: "buffer-size", Value: DefaultBufferSize, Usage: "maximum size of send buffer per session in bytes"},
 				},
