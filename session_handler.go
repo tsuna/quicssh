@@ -181,8 +181,17 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 	loopErr = <-errCh
 	cancel() // Cancel the other goroutine
 
+	// Set a deadline on the sshd connection to interrupt any blocked Read()
+	// in sshdToStream. Without this, sshdToStream blocks forever when sshd
+	// has no data to send (idle session), preventing the loop from exiting
+	// and the deferred session cleanup from running.
+	_ = sess.sshdConn.SetReadDeadline(time.Now())
+
 	// Wait for the second goroutine to finish to ensure clean shutdown
 	<-errCh
+
+	// Clear the deadline so the sshd connection can be reused on resume
+	_ = sess.sshdConn.SetReadDeadline(time.Time{})
 
 	if isFatalSessionError(loopErr) {
 		log.Printf("[stream %v] Session %s loop error: %v", streamID, sess, loopErr)
@@ -338,15 +347,30 @@ func (h *SessionStreamHandler) sshdToStream(ctx context.Context, stream *quic.St
 	}
 }
 
-// isFatalSessionError returns true if the error indicates a genuine application-level
-// failure that should cause the session to be removed. Returns false for errors that
+// isGracefulClose returns true if the error indicates the remote peer
+// gracefully closed the connection (QUIC error code 0). In this case the
+// client will never reconnect, so the session should be cleaned up.
+func isGracefulClose(err error) bool {
+	var appErr *quic.ApplicationError
+	return errors.As(err, &appErr) && appErr.Remote && appErr.ErrorCode == 0
+}
+
+// isFatalSessionError returns true if the error indicates that the session
+// should be removed. This includes genuine application-level failures as well
+// as graceful client shutdowns (error code 0). Returns false for errors that
 // indicate connection loss or stream cancellation, where the client may reconnect.
 func isFatalSessionError(err error) bool {
 	if err == nil || err == io.EOF || err == context.Canceled {
 		return false
 	}
+	// Client gracefully closed the connection (CloseWithError(0, ...)).
+	// The client will never reconnect, so clean up the session.
+	if isGracefulClose(err) {
+		return true
+	}
 	// QUIC connection errors (ApplicationError, TransportError, IdleTimeoutError, etc.)
-	// all unwrap to net.ErrClosed.
+	// all unwrap to net.ErrClosed. These indicate connection loss, not application
+	// failures — the client may reconnect and resume the session.
 	if errors.Is(err, net.ErrClosed) {
 		return false
 	}
