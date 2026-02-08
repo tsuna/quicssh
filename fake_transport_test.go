@@ -61,7 +61,7 @@ func NewFakePacketConnPair(bufferSize int) (*FakePacketConn, *FakePacketConn) {
 	// Wire up send functions
 	conn1.sendFunc = func(data []byte, addr net.Addr) error {
 		if conn2.closed.Load() {
-			return errors.New("connection closed")
+			return net.ErrClosed
 		}
 		pkt := Packet{Data: make([]byte, len(data)), Addr: conn1.localAddr}
 		copy(pkt.Data, data)
@@ -69,13 +69,13 @@ func NewFakePacketConnPair(bufferSize int) (*FakePacketConn, *FakePacketConn) {
 		case ch2 <- pkt:
 			return nil
 		case <-conn2.closeCh:
-			return errors.New("connection closed")
+			return net.ErrClosed
 		}
 	}
 
 	conn2.sendFunc = func(data []byte, addr net.Addr) error {
 		if conn1.closed.Load() {
-			return errors.New("connection closed")
+			return net.ErrClosed
 		}
 		pkt := Packet{Data: make([]byte, len(data)), Addr: conn2.localAddr}
 		copy(pkt.Data, data)
@@ -83,7 +83,7 @@ func NewFakePacketConnPair(bufferSize int) (*FakePacketConn, *FakePacketConn) {
 		case ch1 <- pkt:
 			return nil
 		case <-conn1.closeCh:
-			return errors.New("connection closed")
+			return net.ErrClosed
 		}
 	}
 
@@ -93,7 +93,7 @@ func NewFakePacketConnPair(bufferSize int) (*FakePacketConn, *FakePacketConn) {
 // ReadFrom reads a packet from the connection.
 func (c *FakePacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 	if c.closed.Load() {
-		return 0, nil, errors.New("connection closed")
+		return 0, nil, net.ErrClosed
 	}
 
 	// Handle deadline
@@ -114,7 +114,7 @@ func (c *FakePacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 		n = copy(p, pkt.Data)
 		return n, pkt.Addr, nil
 	case <-c.closeCh:
-		return 0, nil, errors.New("connection closed")
+		return 0, nil, net.ErrClosed
 	case <-timer:
 		return 0, nil, &timeoutError{}
 	}
@@ -123,7 +123,7 @@ func (c *FakePacketConn) ReadFrom(p []byte) (n int, addr net.Addr, err error) {
 // WriteTo writes a packet to addr.
 func (c *FakePacketConn) WriteTo(p []byte, addr net.Addr) (n int, err error) {
 	if c.closed.Load() {
-		return 0, errors.New("connection closed")
+		return 0, net.ErrClosed
 	}
 	if c.sendFunc == nil {
 		return 0, errors.New("not connected")

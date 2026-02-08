@@ -21,14 +21,11 @@ type ClientSession struct {
 	// Connection state
 	connected bool
 	stream    io.ReadWriteCloser
-	quicConn  *quic.Conn // stored for stats access
+	quicConn  *quic.Conn // stored for stats access and graceful close
 
 	// Client process info (for logging on server side)
 	clientPID          uint32
 	grandparentProcess string
-
-	// ACK tracking for QUIC-level ACKs
-	ackTracker *AckTracker
 
 	// Logging
 	logf logFunc
@@ -40,38 +37,20 @@ func NewClientSession(bufferSize int, logf logFunc) (*ClientSession, error) {
 	if err != nil {
 		return nil, err
 	}
-	cs := &ClientSession{
+	return &ClientSession{
 		Session:            sess,
 		clientPID:          uint32(os.Getpid()),
 		grandparentProcess: getGrandparentProcessName(),
 		logf:               logf,
-	}
-	// Create ACK tracker that clears our send buffer when QUIC ACKs packets
-	// Client doesn't have a session timeout, so no onActivity callback needed
-	cs.ackTracker = NewAckTracker(
-		func(upToSeq uint64) {
-			removed, minSeq, maxSeq := cs.Session.HandleAck(&AckFrame{Seq: upToSeq})
-			if removed > 0 {
-				cs.logf("[ClientSession] QUIC ACK cleared %d frames (seq %d-%d) up to seq=%d",
-					removed, minSeq, maxSeq, upToSeq)
-			}
-		},
-		nil, // no activity tracking on client
-	)
-	return cs, nil
+	}, nil
 }
 
-// SetQUICConn installs the ACK hook on the QUIC connection.
+// SetQUICConn stores the QUIC connection for stats access and graceful close.
 // This should be called after establishing/resuming a connection.
 func (cs *ClientSession) SetQUICConn(conn *quic.Conn) {
 	cs.mu.Lock()
 	cs.quicConn = conn
-	// Clear old tracking state from previous connection
-	cs.ackTracker.Clear()
-	// Install ACK hook
-	conn.SetAckHook(cs.ackTracker)
 	cs.mu.Unlock()
-	cs.logf("[ClientSession] ACK hook installed on QUIC connection")
 }
 
 // CloseQUIC tries to close the underlying QUIC connection gracefully.
@@ -85,12 +64,6 @@ func (cs *ClientSession) CloseQUIC(reason string) {
 			cs.logf("[ClientSession] Error closing QUIC connection: %v", err)
 		}
 	}
-}
-
-// RecordWrite records a frame write for QUIC ACK tracking.
-// This should be called after writing a frame to the stream.
-func (cs *ClientSession) RecordWrite(seq uint64) {
-	cs.ackTracker.RecordWrite(seq)
 }
 
 // Connect performs the initial connection handshake (NEW_SESSION).
@@ -191,9 +164,6 @@ func (cs *ClientSession) SendData(ctx context.Context, payload []byte) error {
 		return fmt.Errorf("failed to send DATA: %w", err)
 	}
 
-	// Record this write for QUIC ACK tracking
-	cs.ackTracker.RecordWrite(frame.Seq)
-
 	return nil
 }
 
@@ -208,6 +178,27 @@ func (cs *ClientSession) ReadFrame() (Frame, error) {
 	}
 
 	return ReadFrame(stream)
+}
+
+// SendAck sends an application-level AckFrame to the server with the client's
+// lastRecvSeq. This tells the server that all frames up to lastRecvSeq have been
+// processed by the client application, allowing the server to clear its send buffer.
+// This should be called after successfully processing each received DataFrame.
+func (cs *ClientSession) SendAck() error {
+	cs.mu.Lock()
+	defer cs.mu.Unlock()
+
+	if !cs.connected || cs.stream == nil {
+		return nil
+	}
+
+	lastRecvSeq := cs.Session.LastRecvSeq()
+	if lastRecvSeq == 0 {
+		return nil // Nothing received yet
+	}
+
+	ack := &AckFrame{Seq: lastRecvSeq}
+	return ack.Encode(cs.stream, nil)
 }
 
 // IsConnected returns whether the session is currently connected.
@@ -246,7 +237,6 @@ func (cs *ClientSession) DumpStats() {
 	sendBufFrames := cs.Session.sendBuffer.Len()
 	sendBufMinSeq := cs.Session.sendBuffer.MinSeq()
 	sendBufMaxSeq := cs.Session.sendBuffer.MaxSeq()
-	ackStats := cs.ackTracker.Stats()
 	reconnectCount, lastReconnect := cs.Session.ReconnectStats()
 
 	// Always log to stderr regardless of --verbose since this is triggered by SIGUSR1.
@@ -261,8 +251,6 @@ func (cs *ClientSession) DumpStats() {
 			"  SendBuffer: %d bytes / %d frames (seq %d-%d)\r\n"+
 			"  LastSentSeq: %d\r\n"+
 			"  LastRecvSeq: %d\r\n"+
-			"  QUIC ACKs: pending=%d, acked=%d, highest=%d\r\n"+
-			"  ACK Tracking: lastWrite=%s, lastAck=%s, lastLost=%s (lost=%dpkts)\r\n"+
 			"  QUIC Stats: RTT=%v (min=%v, σ=%v), sent=%s/%dpkts, recv=%s/%dpkts, lost=%s/%dpkts\r\n"+
 			"=== End Session Dump ===\r\n",
 		now.Format("2006/01/02 15:04:05"),
@@ -270,8 +258,6 @@ func (cs *ClientSession) DumpStats() {
 		connected, reconnectCount, timeAgo(lastReconnect, now),
 		sendBufSize, sendBufFrames, sendBufMinSeq, sendBufMaxSeq,
 		lastSent, lastRecv,
-		ackStats.PendingWrites, ackStats.AckedPackets, ackStats.HighestAcked,
-		timeAgo(ackStats.LastWriteTime, now), timeAgo(ackStats.LastAckTime, now), timeAgo(ackStats.LastLostTime, now), ackStats.LostCount,
 		connStats.SmoothedRTT.Round(time.Millisecond),
 		connStats.MinRTT.Round(time.Millisecond),
 		connStats.MeanDeviation.Round(time.Millisecond),

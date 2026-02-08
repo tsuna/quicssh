@@ -54,9 +54,6 @@ type ServerSession struct {
 	loopCancel context.CancelFunc
 	loopDone   chan struct{}
 
-	// ACK tracking for QUIC-level ACKs
-	ackTracker *AckTracker
-
 	// Logging
 	logf logFunc
 }
@@ -110,30 +107,35 @@ func (ss *ServerSession) CancelLoop() bool {
 		cancel()
 	}
 
-	// Close the old stream to force any blocked writes to fail immediately.
-	// This helps the old loop exit faster.
+	// Cancel reads and close the old stream to unblock the old session loop.
+	// CancelRead interrupts any blocked ReadFrame in streamToSSHD (read side).
+	// Close sends a FIN to interrupt any blocked writes in sshdToStream (write side).
+	// Without CancelRead, the read would block until the QUIC idle timeout fires,
+	// which can take up to 5 seconds if the CONNECTION_CLOSE frame was lost.
 	if stream != nil {
-		stream.Close()
+		(*stream).CancelRead(0)
+		(*stream).Close()
+	}
+
+	if done == nil {
+		return true // No old loop to cancel
 	}
 
 	// Set a deadline on the sshd connection to interrupt any blocked Read().
 	// This causes the sshdToStream goroutine to wake up and check ctx.Done().
 	_ = ss.sshdConn.SetReadDeadline(time.Now())
 
-	if done != nil {
-		// Wait for the old loop to exit with a timeout
-		select {
-		case <-done:
-			ss.logf("[session %s] Old loop exited cleanly", ss.ID)
-			// Clear the deadline so the new loop can read normally
-			_ = ss.sshdConn.SetReadDeadline(time.Time{})
-			return true
-		case <-time.After(5 * time.Second):
-			ss.logf("[session %s] Timeout waiting for old loop to exit", ss.ID)
-			return false
-		}
+	// Wait for the old loop to exit with a timeout
+	select {
+	case <-done:
+		ss.logf("[session %s] Old loop exited cleanly", ss.ID)
+		// Clear the deadline so the new loop can read normally
+		_ = ss.sshdConn.SetReadDeadline(time.Time{})
+		return true
+	case <-time.After(5 * time.Second):
+		ss.logf("[session %s] Timeout waiting for old loop to exit", ss.ID)
+		return false
 	}
-	return true
 }
 
 // SetLoopContext stores the loop's cancel function and done channel.
@@ -219,24 +221,6 @@ func (m *SessionManager) HandleNewSession(ctx context.Context, frame *NewSession
 		cancel:             cancel,
 		logf:               m.logf,
 	}
-
-	// Create ACK tracker that clears our send buffer when QUIC ACKs packets
-	// and updates lastActivity on any QUIC activity (including keep-alives)
-	sess.ackTracker = NewAckTracker(
-		func(upToSeq uint64) {
-			removed, minSeq, maxSeq := sess.Session.HandleAck(&AckFrame{Seq: upToSeq})
-			if removed > 0 {
-				sess.logf("[ServerSession %s] QUIC ACK cleared %d frames (seq %d-%d) up to seq=%d",
-					sess, removed, minSeq, maxSeq, upToSeq)
-			}
-		},
-		func() {
-			// Update lastActivity on any QUIC activity (including keep-alive ACKs)
-			sess.mu.Lock()
-			sess.lastActivity = time.Now()
-			sess.mu.Unlock()
-		},
-	)
 
 	m.sessions[frame.SessionID] = sess
 	m.logf("[SessionManager] New session created: %s from %q (pid=%d, total: %d)",
@@ -453,7 +437,6 @@ func (m *SessionManager) dumpSessions() {
 		}
 		sess.mu.Unlock()
 
-		stats := sess.ackTracker.Stats()
 		reconnectCount, lastReconnect := sess.ReconnectStats()
 
 		m.logf("  Session %s: pid=%d (from=%q) idle=%v reconnects=%d (last: %s)",
@@ -462,10 +445,6 @@ func (m *SessionManager) dumpSessions() {
 		m.logf("    SendBuf: %s/%d frames (seq %d-%d) nextSendSeq=%d lastRecvSeq=%d",
 			fmtBytes(sendBufSize), sendBufFrames, sendBufMinSeq, sendBufMaxSeq,
 			nextSendSeq, lastRecvSeq)
-		m.logf("    ACKs: pending=%d, acked=%d, highest=%d",
-			stats.PendingWrites, stats.AckedPackets, stats.HighestAcked)
-		m.logf("    ACK Tracking: lastWrite=%s, lastAck=%s, lastLost=%s (lost=%dpkts)",
-			timeAgo(stats.LastWriteTime, now), timeAgo(stats.LastAckTime, now), timeAgo(stats.LastLostTime, now), stats.LostCount)
 		m.logf("    QUIC Stats: RTT=%v (min=%v, σ=%v), sent=%s/%dpkts, recv=%s/%dpkts, lost=%s/%dpkts",
 			connStats.SmoothedRTT.Round(time.Millisecond),
 			connStats.MinRTT.Round(time.Millisecond),
@@ -510,21 +489,10 @@ func (ss *ServerSession) SSHDWriter() io.Writer {
 	return ss.sshdConn
 }
 
-// SetQUICConn installs the ACK hook on the QUIC connection.
+// SetQUICConn stores the QUIC connection for stats access.
 // This should be called when a new stream is established for this session.
 func (ss *ServerSession) SetQUICConn(conn *quic.Conn) {
 	ss.mu.Lock()
 	ss.quicConn = conn
-	// Clear old tracking state from previous connection
-	ss.ackTracker.Clear()
-	// Install ACK hook
-	conn.SetAckHook(ss.ackTracker)
 	ss.mu.Unlock()
-	ss.logf("[ServerSession %s] ACK hook installed on QUIC connection", ss)
-}
-
-// RecordWrite records a frame write for QUIC ACK tracking.
-// This should be called after writing a frame to the stream.
-func (ss *ServerSession) RecordWrite(seq uint64) {
-	ss.ackTracker.RecordWrite(seq)
 }

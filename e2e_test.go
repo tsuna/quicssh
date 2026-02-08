@@ -723,14 +723,12 @@ func TestE2E_ConnectionRecovery(t *testing.T) {
 // - Random packet drops
 // - Random packet reordering
 // - Random packet duplication
+// - Random connection breaks with session resumption
 // - Continuous bidirectional data streaming
 // - Verification that all data arrives in order with no gaps
 //
 // The test uses a seed-based PRNG for reproducibility. If a test fails, you can
 // reproduce it by setting the QUICSSH_TEST_SEED environment variable.
-//
-// Note: This test does NOT test connection breaks/resume because that requires
-// more complex infrastructure. See TestE2E_ConnectionRecovery for that.
 func TestE2E_TortureTest(t *testing.T) {
 	// Get seed from flag or environment variable, or use current time
 	var seed int64
@@ -757,6 +755,7 @@ func TestE2E_TortureTest(t *testing.T) {
 		dropRate        = 0.05 // 5% packet drop rate
 		reorderRate     = 0.10 // 10% packet reorder rate
 		duplicateRate   = 0.02 // 2% packet duplication rate
+		disconnectRate  = 0.01 // 1% chance per data frame of breaking the connection
 		maxReorderDelay = 100 * time.Millisecond
 	)
 
@@ -828,6 +827,7 @@ func TestE2E_TortureTest(t *testing.T) {
 	var (
 		clientSentSeq     atomic.Uint64 // Next sequence to send from client
 		clientReceivedSeq atomic.Uint64 // Next sequence expected to receive at client
+		reconnectCount    atomic.Uint64 // Number of successful reconnections
 
 		testErrors   []string
 		testErrorsMu sync.Mutex
@@ -839,154 +839,237 @@ func TestE2E_TortureTest(t *testing.T) {
 		testErrors = append(testErrors, fmt.Sprintf(format, args...))
 	}
 
-	// Client goroutine: sends messages and receives echoes
+	// Client goroutine: sends messages and receives echoes, with random disconnects
 	clientDone := make(chan struct{})
 	go func() {
 		defer close(clientDone)
 
-		// Create a separate context for the client that we can cancel independently
 		clientCtx, clientCancel := context.WithCancel(ctx)
 		defer clientCancel()
 
 		clientTLS := generateTestClientTLSConfig()
 		quicConfig := testQuicConfig()
 
-		// Create client session
 		clientSession, err := NewClientSession(DefaultBufferSize, t.Logf)
 		if err != nil {
 			recordError("Failed to create client session: %v", err)
 			return
 		}
 
-		// Connect to server
 		clientTransport := &quic.Transport{Conn: clientConn}
-		session, err := clientTransport.Dial(clientCtx, serverConn.LocalAddr(), clientTLS, quicConfig)
-		if err != nil {
-			recordError("Client dial failed: %v", err)
-			return
-		}
 
-		stream, err := session.OpenStreamSync(clientCtx)
-		if err != nil {
-			recordError("Failed to open stream: %v", err)
-			return
-		}
-
-		if err := clientSession.Connect(stream); err != nil {
-			recordError("Client session connect failed: %v", err)
-			return
-		}
-
-		t.Log("Client session connected")
-
-		// Receiver: reads echo responses
-		receiveDone := make(chan struct{})
-		go func() {
-			defer close(receiveDone)
-			for {
-				select {
-				case <-clientCtx.Done():
-					return
-				default:
-				}
-
-				frame, err := ReadFrame(stream)
-				if err != nil {
-					if clientCtx.Err() != nil {
-						return
-					}
-					t.Logf("Client ReadFrame error: %v", err)
-					return
-				}
-
-				if dataFrame, ok := frame.(*DataFrame); ok {
-					if debugFrames {
-						t.Logf("[Client] Received seq=%d %s", dataFrame.Seq, frameDigest(dataFrame.Payload))
-					}
-					// A DATA frame may contain multiple messages batched together
-					// Each message is 40 bytes (8 bytes seq + 32 bytes data)
-					const messageSize = 40
-					payload := dataFrame.Payload
-
-					for len(payload) >= messageSize {
-						// Extract one message
-						msg := payload[:messageSize]
-						payload = payload[messageSize:]
-
-						// Verify sequence number
-						expectedSeq := clientReceivedSeq.Load()
-						receivedSeq := binary.BigEndian.Uint64(msg[:8])
-
-						// Check for poison pill (sequence number 0xFFFFFFFFFFFFFFFF) - signals end of test
-						if receivedSeq == 0xFFFFFFFFFFFFFFFF {
-							return
-						}
-						if receivedSeq != expectedSeq {
-							recordError("Client received out-of-order: got seq %d, expected %d", receivedSeq, expectedSeq)
-						} else {
-							clientReceivedSeq.Add(1)
-						}
-					}
-
-					// Warn if there's leftover data that doesn't fit a full message
-					if len(payload) > 0 {
-						recordError("Client received partial message: %d bytes leftover", len(payload))
-					}
-				}
-			}
-		}()
-
-		// Sender: sends messages at regular intervals
 		sendTicker := time.NewTicker(time.Second / time.Duration(messagesPerSecond))
 		defer sendTicker.Stop()
 
 		testTimer := time.NewTimer(testDuration)
 		defer testTimer.Stop()
 
-	sendLoop:
-		for {
-			select {
-			case <-clientCtx.Done():
-				break sendLoop
-			case <-testTimer.C:
-				// Test duration elapsed
-				break sendLoop
-			case <-sendTicker.C:
-				// Send a message with sequence number
-				seq := clientSentSeq.Add(1) - 1
-				payload := make([]byte, 8+32) // 8 bytes seq + 32 bytes random data
-				binary.BigEndian.PutUint64(payload[:8], seq)
-				rng.Read(payload[8:])
+		isFirstConnection := true
 
-				if debugFrames {
-					t.Logf("[Client] Sending seq=%d %s", seq, frameDigest(payload))
+		// Outer loop: each iteration is one QUIC connection lifetime.
+		// Connections are broken randomly (per-frame probability) to exercise
+		// session resumption under chaos conditions.
+		for {
+			// Establish QUIC connection
+			dialCtx, dialCancel := context.WithTimeout(clientCtx, 5*time.Second)
+			quicConn, err := clientTransport.Dial(dialCtx, serverConn.LocalAddr(), clientTLS, quicConfig)
+			dialCancel()
+			if err != nil {
+				if clientCtx.Err() != nil {
+					return
 				}
-				if err := clientSession.SendData(clientCtx, payload); err != nil {
-					t.Logf("Client SendData error: %v", err)
+				recordError("Client dial failed: %v", err)
+				return
+			}
+
+			stream, err := quicConn.OpenStreamSync(clientCtx)
+			if err != nil {
+				if clientCtx.Err() != nil {
+					return
+				}
+				recordError("Failed to open stream: %v", err)
+				return
+			}
+
+			// Connect (first time) or Resume (after disconnect)
+			if isFirstConnection {
+				if err := clientSession.Connect(stream); err != nil {
+					recordError("Client session connect failed: %v", err)
+					return
+				}
+				t.Log("Client session connected")
+				isFirstConnection = false
+			} else {
+				framesToReplay, err := clientSession.Resume(stream)
+				if errors.Is(err, ErrSessionNotFound) && reconnectCount.Load() == 0 && clientReceivedSeq.Load() == 0 {
+					// Session was never created on server (e.g., NEW_SESSION packet
+					// was dropped and client disconnected before QUIC retransmitted).
+					// This can only happen before the server has confirmed the session
+					// by echoing data back or processing a successful resume.
+					// Start fresh with a new session.
+					t.Log("Session not found on server (never confirmed), creating new session")
+					quicConn.CloseWithError(0, "session not found")
+					var csErr error
+					clientSession, csErr = NewClientSession(DefaultBufferSize, t.Logf)
+					if csErr != nil {
+						recordError("Failed to create new client session: %v", csErr)
+						return
+					}
+					// Reset counters since the old session's data was never delivered
+					clientSentSeq.Store(0)
+					clientReceivedSeq.Store(0)
+					isFirstConnection = true
+					continue // Reconnect via outer loop
+				}
+				if err != nil {
+					recordError("Client session resume failed: %v", err)
+					return
+				}
+				encBuf := clientSession.EncodeBuffer()
+				for _, frame := range framesToReplay {
+					if err := frame.Encode(stream, encBuf); err != nil {
+						recordError("Failed to replay frame seq=%d: %v", frame.Seq, err)
+						return
+					}
+				}
+				n := reconnectCount.Add(1)
+				t.Logf("Client session resumed (reconnect #%d, replayed %d frames)", n, len(framesToReplay))
+			}
+
+			// Receiver: reads echo responses for this connection
+			receiveDone := make(chan struct{})
+			go func() {
+				defer close(receiveDone)
+				for {
+					select {
+					case <-clientCtx.Done():
+						return
+					default:
+					}
+
+					frame, err := ReadFrame(stream)
+					if err != nil {
+						if clientCtx.Err() != nil {
+							return
+						}
+						// Expected during chaos disconnect - not an error
+						return
+					}
+
+					if dataFrame, ok := frame.(*DataFrame); ok {
+						// Pass through session layer for deduplication.
+						// After reconnect, the server replays unACKed frames;
+						// HandleData filters out duplicates so we only process new data.
+						isNew, err := clientSession.HandleData(dataFrame)
+						if err != nil {
+							recordError("Session HandleData error: seq=%d err=%v", dataFrame.Seq, err)
+							continue
+						}
+						if !isNew {
+							continue // Duplicate from replay, skip
+						}
+
+						if debugFrames {
+							t.Logf("[Client] Received seq=%d %s", dataFrame.Seq, frameDigest(dataFrame.Payload))
+						}
+						// A DATA frame may contain multiple messages batched together
+						// Each message is 40 bytes (8 bytes seq + 32 bytes data)
+						const messageSize = 40
+						payload := dataFrame.Payload
+
+						for len(payload) >= messageSize {
+							msg := payload[:messageSize]
+							payload = payload[messageSize:]
+
+							expectedSeq := clientReceivedSeq.Load()
+							receivedSeq := binary.BigEndian.Uint64(msg[:8])
+
+							// Check for poison pill (sequence number 0xFFFFFFFFFFFFFFFF) - signals end of test
+							if receivedSeq == 0xFFFFFFFFFFFFFFFF {
+								return
+							}
+							if receivedSeq != expectedSeq {
+								recordError("Client received out-of-order: got seq %d, expected %d", receivedSeq, expectedSeq)
+							} else {
+								clientReceivedSeq.Add(1)
+							}
+						}
+
+						if len(payload) > 0 {
+							recordError("Client received partial message: %d bytes leftover", len(payload))
+						}
+
+						// Send app-level ACK so the server can clear its send buffer.
+						// Ignore errors: if the connection died, the next ReadFrame will catch it.
+						_ = clientSession.SendAck()
+					}
+				}
+			}()
+
+			// Send messages until a random disconnect or the test timer fires
+			testEnded := false
+			shouldDisconnect := false
+
+		sendLoop:
+			for {
+				select {
+				case <-clientCtx.Done():
+					testEnded = true
+					break sendLoop
+				case <-testTimer.C:
+					testEnded = true
+					break sendLoop
+				case <-sendTicker.C:
+					seq := clientSentSeq.Add(1) - 1
+					payload := make([]byte, 8+32) // 8 bytes seq + 32 bytes random data
+					binary.BigEndian.PutUint64(payload[:8], seq)
+					rng.Read(payload[8:])
+
+					if debugFrames {
+						t.Logf("[Client] Sending seq=%d %s", seq, frameDigest(payload))
+					}
+					if err := clientSession.SendData(clientCtx, payload); err != nil {
+						t.Logf("Client SendData error: %v", err)
+					}
+
+					// Randomly break the connection
+					if rng.Float64() < disconnectRate {
+						shouldDisconnect = true
+						break sendLoop
+					}
 				}
 			}
-		}
 
-		// Send a poison pill (sequence number 0xFFFFFFFFFFFFFFFF) to signal the receiver to exit
-		// This unblocks the receiver goroutine which is waiting in ReadFrame()
-		poisonPill := make([]byte, 8+32)
-		binary.BigEndian.PutUint64(poisonPill[:8], 0xFFFFFFFFFFFFFFFF)
-		// Fill the rest with zeros to distinguish from random data
-		clientSession.SendData(clientCtx, poisonPill)
+			if testEnded {
+				// Test duration elapsed - send poison pill and exit
+				poisonPill := make([]byte, 8+32)
+				binary.BigEndian.PutUint64(poisonPill[:8], 0xFFFFFFFFFFFFFFFF)
+				clientSession.SendData(clientCtx, poisonPill)
+				clientSession.Disconnect()
+				clientCancel()
+				stream.CancelRead(0)
 
-		// Disconnect the session to signal the server to clean up
-		clientSession.Disconnect()
+				select {
+				case <-receiveDone:
+				case <-time.After(1 * time.Second):
+					t.Logf("Warning: receiver did not finish within timeout")
+				}
+				return
+			}
 
-		// Signal the receiver to stop and close the stream
-		clientCancel()
-		stream.CancelRead(0)
+			if shouldDisconnect {
+				// Break the connection and reconnect
+				t.Logf("Chaos disconnect triggered after seq %d", clientSentSeq.Load()-1)
+				clientSession.Disconnect()
+				quicConn.CloseWithError(1, "chaos disconnect")
 
-		// Wait for receiver to finish with a timeout
-		select {
-		case <-receiveDone:
-			// Receiver finished cleanly
-		case <-time.After(1 * time.Second):
-			t.Logf("Warning: receiver did not finish within timeout")
+				select {
+				case <-receiveDone:
+				case <-time.After(2 * time.Second):
+					t.Logf("Warning: receiver did not finish within timeout after disconnect")
+				}
+				continue // Reconnect via outer loop
+			}
 		}
 	}()
 
@@ -999,6 +1082,11 @@ func TestE2E_TortureTest(t *testing.T) {
 	clientConn.Close()
 	serverConn.Close()
 
+	// Close the echo server to unblock any sshdToStream goroutines blocked
+	// reading from sshd. This must happen before server.Close() which waits
+	// for active handlers that may be stuck in net.Read on the sshd connection.
+	cleanupSshd()
+
 	// Close the server and wait for all cleanup to complete
 	// This ensures SessionManager's signal handlers are fully stopped before
 	// the next test iteration (prevents hangs with -count flag)
@@ -1008,6 +1096,7 @@ func TestE2E_TortureTest(t *testing.T) {
 	t.Logf("=== TEST STATISTICS ===")
 	t.Logf("Client sent: %d messages", clientSentSeq.Load())
 	t.Logf("Client received: %d messages", clientReceivedSeq.Load())
+	t.Logf("Reconnects: %d", reconnectCount.Load())
 
 	clientDropped, clientReordered, clientDuplicated := clientConn.GetStats()
 	serverDropped, serverReordered, serverDuplicated := serverConn.GetStats()
