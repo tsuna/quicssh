@@ -11,6 +11,15 @@ import (
 	"github.com/quic-go/quic-go"
 )
 
+const (
+	// ackBatchFrames is the maximum number of received frames before sending an ACK.
+	// At the maximum frame size (64KB), 64 frames = 4MB of unACKed data, leaving
+	// 12MB of headroom in the default 16MB send buffer for ACK delivery latency.
+	ackBatchFrames = 64
+	// ackBatchTimeout is the maximum time to wait before sending an ACK.
+	ackBatchTimeout = 300 * time.Millisecond
+)
+
 // ClientSession manages the client-side session state and handles
 // reconnection with the session layer protocol.
 type ClientSession struct {
@@ -22,6 +31,11 @@ type ClientSession struct {
 	connected bool
 	stream    io.ReadWriteCloser
 	quicConn  *quic.Conn // stored for stats access and graceful close
+
+	// ACK batching state: instead of ACKing every frame, we batch ACKs
+	// and send when either the frame count or time threshold is reached.
+	framesSinceAck int
+	lastAckTime    time.Time
 
 	// Client process info (for logging on server side)
 	clientPID          uint32
@@ -180,9 +194,11 @@ func (cs *ClientSession) ReadFrame() (Frame, error) {
 	return ReadFrame(stream)
 }
 
-// SendAck sends an application-level AckFrame to the server with the client's
-// lastRecvSeq. This tells the server that all frames up to lastRecvSeq have been
-// processed by the client application, allowing the server to clear its send buffer.
+// SendAck notifies the server of the client's receive progress so it can clear
+// its send buffer. To reduce overhead, ACKs are batched: an AckFrame is only
+// sent after every ackBatchFrames frames or ackBatchTimeout, whichever comes first.
+// The AckFrame is cumulative — a single ACK with lastRecvSeq=N covers all frames
+// up to and including N.
 // This should be called after successfully processing each received DataFrame.
 func (cs *ClientSession) SendAck() error {
 	cs.mu.Lock()
@@ -196,6 +212,17 @@ func (cs *ClientSession) SendAck() error {
 	if lastRecvSeq == 0 {
 		return nil // Nothing received yet
 	}
+
+	cs.framesSinceAck++
+
+	// Send ACK when either threshold is reached
+	now := time.Now()
+	if cs.framesSinceAck < ackBatchFrames && now.Sub(cs.lastAckTime) < ackBatchTimeout {
+		return nil
+	}
+
+	cs.framesSinceAck = 0
+	cs.lastAckTime = now
 
 	ack := &AckFrame{Seq: lastRecvSeq}
 	return ack.Encode(cs.stream, nil)
