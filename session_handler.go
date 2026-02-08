@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"net"
 	"time"
 
 	quic "github.com/quic-go/quic-go"
@@ -66,7 +67,7 @@ func (h *SessionStreamHandler) handleNewSession(ctx context.Context, stream *qui
 		return fmt.Errorf("failed to create session: %w", err)
 	}
 
-	// Install ACK hook on the QUIC connection
+	// Store QUIC connection for stats access
 	sess.SetQUICConn(conn)
 
 	// Run the session data loop
@@ -92,7 +93,7 @@ func (h *SessionStreamHandler) handleResumeSession(ctx context.Context, stream *
 		return fmt.Errorf("failed to resume session: %w", err)
 	}
 
-	// Install ACK hook on the new QUIC connection
+	// Store QUIC connection for stats access
 	sess.SetQUICConn(conn)
 
 	// Send RESUME_ACK
@@ -114,8 +115,6 @@ func (h *SessionStreamHandler) handleResumeSession(ctx context.Context, stream *
 		if err := df.Encode(stream, encBuf); err != nil {
 			return fmt.Errorf("failed to replay frame %d: %w", df.Seq, err)
 		}
-		// Record the replayed write for ACK tracking
-		sess.RecordWrite(df.Seq)
 	}
 
 	// Record the reconnect for stats
@@ -152,10 +151,15 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 	}()
 
 	// Cleanup: if the loop exits with a fatal error (not just connection loss),
-	// remove the session so it doesn't linger forever
+	// remove the session so it doesn't linger forever.
+	// Non-fatal errors include:
+	// - io.EOF: normal stream close
+	// - context.Canceled: loop was cancelled (e.g., during session resume)
+	// - net.ErrClosed: QUIC connection died (client may reconnect)
+	// - *quic.StreamError: stream cancelled (e.g., CancelRead during resume)
 	var loopErr error
 	defer func() {
-		if loopErr != nil && loopErr != io.EOF && loopErr != context.Canceled {
+		if isFatalSessionError(loopErr) {
 			h.logf("[stream %v] Session %s failed with error, removing: %v", streamID, sess, loopErr)
 			h.manager.RemoveSession(sess.ID, fmt.Sprintf("session error: %v", loopErr))
 		}
@@ -180,7 +184,7 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 	// Wait for the second goroutine to finish to ensure clean shutdown
 	<-errCh
 
-	if loopErr != nil && loopErr != io.EOF && loopErr != context.Canceled {
+	if isFatalSessionError(loopErr) {
 		log.Printf("[stream %v] Session %s loop error: %v", streamID, sess, loopErr)
 	}
 
@@ -188,7 +192,8 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 }
 
 // streamToSSHD reads frames from QUIC stream and writes data to sshd.
-// ACKs are handled at the QUIC level via the ACK hook mechanism.
+// The client sends application-level AckFrames after processing each DataFrame,
+// which the server uses to clear its send buffer.
 func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.Stream, sess *ServerSession, clientAddr string) error {
 	for {
 		select {
@@ -232,7 +237,11 @@ func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.St
 			h.manager.UpdateActivity(sess.ID)
 
 		case *AckFrame:
-			// Handle ACK frames from old clients for backward compatibility
+			// Handle application-level ACK from client.
+			// The client sends these after processing each DataFrame, allowing
+			// us to safely clear the send buffer. This is the primary mechanism
+			// for send buffer management (not QUIC-level ACKs, which fire before
+			// the client application has read data from the QUIC stream buffer).
 			sess.HandleAck(f)
 
 		case *CloseFrame:
@@ -323,11 +332,28 @@ func (h *SessionStreamHandler) sshdToStream(ctx context.Context, stream *quic.St
 				return fmt.Errorf("failed to send data frame: %w", err)
 			}
 
-			// Record this write for QUIC ACK tracking
-			sess.RecordWrite(frame.Seq)
-
 			// Update activity
 			h.manager.UpdateActivity(sess.ID)
 		}
 	}
+}
+
+// isFatalSessionError returns true if the error indicates a genuine application-level
+// failure that should cause the session to be removed. Returns false for errors that
+// indicate connection loss or stream cancellation, where the client may reconnect.
+func isFatalSessionError(err error) bool {
+	if err == nil || err == io.EOF || err == context.Canceled {
+		return false
+	}
+	// QUIC connection errors (ApplicationError, TransportError, IdleTimeoutError, etc.)
+	// all unwrap to net.ErrClosed.
+	if errors.Is(err, net.ErrClosed) {
+		return false
+	}
+	// Stream cancellation errors (from CancelRead during session resume).
+	var streamErr *quic.StreamError
+	if errors.As(err, &streamErr) {
+		return false
+	}
+	return true
 }

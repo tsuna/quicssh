@@ -217,7 +217,7 @@ The session layer provides robust connection resilience that goes beyond what QU
     - Both sides replay any unacknowledged data
     - The SSH session continues without interruption
 
-4. **ACK piggybacking**: Instead of application-level ACKs, we hook into QUIC's internal packet acknowledgment mechanism for efficiency. This currently requires a [fork of quic-go](https://github.com/tsuna/quic-go) with a small patch to expose ACK callbacks.
+4. **Application-level ACKs**: After processing each received data frame, the client sends an ACK back to the server so it can clear its send buffer. This ensures the server retains frames until the client has actually processed them — QUIC-level ACKs alone are insufficient because they fire when the transport layer receives data, not when the application reads it.
 
 ### Resilience Scenarios
 
@@ -406,13 +406,31 @@ go test -v -run TestE2E -timeout 60s .
 
 The end-to-end tests use fake UDP transports (channel-based) instead of real network sockets, allowing the entire QUIC + session layer stack to be tested in a controlled environment without network dependencies. Key test files:
 
-- `e2e_test.go`: End-to-end tests for basic connectivity and connection recovery
+- `e2e_test.go`: End-to-end tests for basic connectivity, connection recovery, and chaos/torture testing
 - `fake_transport_test.go`: Fake UDP transport infrastructure using Go channels
+- `chaos_transport_test.go`: Chaos injection layer (packet drops, reordering, duplication)
 
-To run tests multiple times (useful for detecting race conditions or cleanup issues):
+#### Chaos Torture Test
+
+The `TestE2E_TortureTest` exercises the session layer under hostile conditions:
+
+- **5% packet drop rate** — forces QUIC retransmissions
+- **10% packet reordering** — tests out-of-order delivery handling
+- **2% packet duplication** — tests deduplication logic
+- **1% per-frame random disconnect** — exercises session resumption under stress
+
+The test uses a seed-based PRNG for reproducibility. If a test fails, reproduce it with:
 
 ```bash
-go test -v -run TestE2E -timeout 120s . -count 5
+QUICSSH_TEST_SEED=<seed> go test -v -run TestE2E_TortureTest
+```
+
+Add `QUICSSH_VERBOSE=1 QUICSSH_DEBUG_FRAMES=1` for detailed frame-level logging.
+
+To verify stability across many iterations:
+
+```bash
+go test -run TestE2E_TortureTest -count=50 -timeout 20m
 ```
 
 ## Resources

@@ -342,7 +342,7 @@ func runClientSessionLayer(ctx context.Context, stream *quic.Stream, cfg *sessio
 	// notify the server when we die (unlike TCP which sends RST).
 	defer clientSession.CloseQUIC("client shutdown")
 
-	// Install ACK hook on the initial QUIC connection
+	// Store QUIC connection for stats access and graceful close
 	if cfg.initialConn != nil {
 		clientSession.SetQUICConn(cfg.initialConn)
 	}
@@ -615,7 +615,7 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 
 		logf("QUIC connection established: local=%v remote=%v", session.LocalAddr(), session.RemoteAddr())
 
-		// Install ACK hook on the new connection
+		// Store QUIC connection for stats access and graceful close
 		clientSession.SetQUICConn(session)
 
 		// Open stream
@@ -682,8 +682,6 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 					backoff = nextBackoff(backoff, maxBackoff, backoffFactor)
 					continue
 				}
-				// Record the replayed write for ACK tracking
-				clientSession.RecordWrite(frame.Seq)
 			}
 			logf("Replay complete")
 		}
@@ -783,7 +781,8 @@ func clientStdinToSession(ctx context.Context, session *ClientSession, stdinCh <
 }
 
 // clientSessionToStdout reads DATA frames and writes to stdout.
-// ACKs are handled at the QUIC level via the ACK hook mechanism.
+// After processing each DataFrame, it sends an application-level AckFrame
+// to the server so it can clear its send buffer.
 func clientSessionToStdout(ctx context.Context, session *ClientSession, logf logFunc) error {
 	for {
 		select {
@@ -819,6 +818,12 @@ func clientSessionToStdout(ctx context.Context, session *ClientSession, logf log
 			// Write to stdout
 			if _, err := os.Stdout.Write(f.Payload); err != nil {
 				return fmt.Errorf("stdout write error: %w", err)
+			}
+
+			// Send app-level ACK so the server can clear its send buffer.
+			// Non-fatal: if the connection died, the next ReadFrame will catch it.
+			if err := session.SendAck(); err != nil {
+				logf("[stdout] SendAck error (non-fatal): %v", err)
 			}
 
 		case *AckFrame:
