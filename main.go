@@ -243,10 +243,10 @@ func readAndWrite(ctx context.Context, r io.Reader, w io.Writer, idleTimeout tim
 					if !networkDownSince.IsZero() {
 						signalTrouble()
 					}
-					// Check if context is cancelled
+					// Check if context is canceled
 					select {
 					case <-ctx.Done():
-						logf("[%T->%T] Context cancelled: %v", r, w, ctx.Err())
+						logf("[%T->%T] Context canceled: %v", r, w, ctx.Err())
 						c <- ctx.Err()
 						return
 					default:
@@ -258,7 +258,7 @@ func readAndWrite(ctx context.Context, r io.Reader, w io.Writer, idleTimeout tim
 				// Check for context cancellation
 				select {
 				case <-ctx.Done():
-					logf("[%T->%T] Context cancelled: %v", r, w, ctx.Err())
+					logf("[%T->%T] Context canceled: %v", r, w, ctx.Err())
 					c <- ctx.Err()
 				default:
 					logf("[%T->%T] Fatal read error, exiting: %v", r, w, err)
@@ -312,7 +312,7 @@ func createLogFunc(c *cli.Context) (logFunc, *os.File) {
 	// Check QUICSSH_VERBOSE env var
 	verboseEnv := os.Getenv("QUICSSH_VERBOSE")
 	if verboseEnv == "" {
-		return func(format string, v ...interface{}) {}, nil
+		return func(_ string, _ ...interface{}) {}, nil
 	}
 
 	if verboseEnv == "1" {
@@ -326,7 +326,7 @@ func createLogFunc(c *cli.Context) (logFunc, *os.File) {
 		f, err := os.OpenFile(verboseEnv, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Printf("Warning: failed to open log file %s: %v", verboseEnv, err)
-			return func(format string, v ...interface{}) {}, nil
+			return func(_ string, _ ...interface{}) {}, nil
 		}
 		logger := log.New(f, "", log.LstdFlags)
 		return func(format string, v ...interface{}) {
@@ -335,7 +335,7 @@ func createLogFunc(c *cli.Context) (logFunc, *os.File) {
 	}
 
 	// Unknown value, ignore
-	return func(format string, v ...interface{}) {}, nil
+	return func(_ string, _ ...interface{}) {}, nil
 }
 
 // debugFrames is true if per-frame debug logging is enabled via QUICSSH_DEBUG_FRAMES=1.

@@ -74,7 +74,7 @@ func (h *SessionStreamHandler) handleNewSession(ctx context.Context, stream *qui
 	return h.runSessionLoop(stream, sess, clientAddr)
 }
 
-func (h *SessionStreamHandler) handleResumeSession(ctx context.Context, stream *quic.Stream, conn *quic.Conn, frame *ResumeSessionFrame, clientAddr string) error {
+func (h *SessionStreamHandler) handleResumeSession(_ context.Context, stream *quic.Stream, conn *quic.Conn, frame *ResumeSessionFrame, clientAddr string) error {
 	streamID := stream.StreamID()
 	h.logf("[stream %v from %s] RESUME_SESSION: %s (lastSent=%d, lastRecv=%d)",
 		streamID, clientAddr, frame.SessionID, frame.LastSentSeq, frame.LastRecvSeq)
@@ -126,8 +126,8 @@ func (h *SessionStreamHandler) handleResumeSession(ctx context.Context, stream *
 
 // runSessionLoop handles the bidirectional data flow for a session.
 // It uses the session's context (not the caller's context) so that when the session
-// is cleaned up via sess.cancel(), this loop will be cancelled. The session context
-// is a child of the QUIC connection context, so it will also be cancelled if the
+// is cleaned up via sess.cancel(), this loop will be canceled. The session context
+// is a child of the QUIC connection context, so it will also be canceled if the
 // QUIC connection dies.
 //
 // When a session resumes, HandleResumeSession cancels the old loop before
@@ -142,7 +142,7 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 	loopCtx, cancel := context.WithCancel(sess.Context())
 	loopDone := make(chan struct{})
 
-	// Store the loop context so it can be cancelled on session resume
+	// Store the loop context so it can be canceled on session resume
 	sess.SetLoopContext(cancel, loopDone)
 	defer func() {
 		cancel()
@@ -154,9 +154,9 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 	// remove the session so it doesn't linger forever.
 	// Non-fatal errors include:
 	// - io.EOF: normal stream close
-	// - context.Canceled: loop was cancelled (e.g., during session resume)
+	// - context.Canceled: loop was canceled (e.g., during session resume)
 	// - net.ErrClosed: QUIC connection died (client may reconnect)
-	// - *quic.StreamError: stream cancelled (e.g., CancelRead during resume)
+	// - *quic.StreamError: stream canceled (e.g., CancelRead during resume)
 	var loopErr error
 	defer func() {
 		if isFatalSessionError(loopErr) {
@@ -203,7 +203,7 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 // streamToSSHD reads frames from QUIC stream and writes data to sshd.
 // The client sends application-level AckFrames after processing each DataFrame,
 // which the server uses to clear its send buffer.
-func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.Stream, sess *ServerSession, clientAddr string) error {
+func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.Stream, sess *ServerSession, _ string) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -265,7 +265,7 @@ func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.St
 }
 
 // sshdToStream reads data from sshd and writes frames to QUIC stream.
-func (h *SessionStreamHandler) sshdToStream(ctx context.Context, stream *quic.Stream, sess *ServerSession, clientAddr string) error {
+func (h *SessionStreamHandler) sshdToStream(ctx context.Context, stream *quic.Stream, sess *ServerSession, _ string) error {
 	buf := make([]byte, 32*1024) // 32KB read buffer
 	backpressureLogged := false
 
@@ -299,7 +299,7 @@ func (h *SessionStreamHandler) sshdToStream(ctx context.Context, stream *quic.St
 
 		n, err := sess.SSHDReader().Read(buf)
 		if err != nil {
-			// Check if context is cancelled first - this takes priority.
+			// Check if context is canceled first - this takes priority.
 			// CancelLoop() sets a deadline on the sshd connection to interrupt
 			// this blocked read, so we check context here to exit cleanly.
 			select {
@@ -376,8 +376,5 @@ func isFatalSessionError(err error) bool {
 	}
 	// Stream cancellation errors (from CancelRead during session resume).
 	var streamErr *quic.StreamError
-	if errors.As(err, &streamErr) {
-		return false
-	}
-	return true
+	return !errors.As(err, &streamErr)
 }

@@ -38,4 +38,3 @@ func getParentPID(pid int) (int, error) {
 	// rest[0] is state, rest[1] is ppid
 	return strconv.Atoi(rest[1])
 }
-

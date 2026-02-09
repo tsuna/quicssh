@@ -63,7 +63,7 @@ func (ss *ServerSession) String() string {
 	return fmt.Sprintf("%s/%s", ss.ID, ss.remoteAddr)
 }
 
-// Context returns the session's context, which is cancelled when the session is closed.
+// Context returns the session's context, which is canceled when the session is closed.
 func (ss *ServerSession) Context() context.Context {
 	return ss.ctx
 }
@@ -278,20 +278,20 @@ func (m *SessionManager) HandleResumeSession(frame *ResumeSessionFrame, remoteAd
 	m.logf("[SessionManager] Session resumed: %s (was %s) (lastRecv=%d, lastSent=%d)",
 		sess, oldAddr, ack.LastRecvSeq, ack.LastSentSeq)
 
-	// Release the lock before cancelling the old loop (which may block)
+	// Release the lock before canceling the old loop (which may block)
 	m.mu.Unlock()
 
 	// Cancel the old runSessionLoop and wait for it to exit.
 	// This prevents race conditions where the old sshdToStream goroutine
 	// competes with the new one to read from sshd and allocate sequence numbers.
-	m.logf("[SessionManager] Cancelling old loop for session %s...", sess.ID)
+	m.logf("[SessionManager] Canceling old loop for session %s...", sess.ID)
 	if !sess.CancelLoop() {
 		// Old loop didn't exit cleanly - this is dangerous because it could
 		// race with the new loop for sequence numbers and sshd reads.
 		// We must fail the resume to avoid data corruption.
 		return nil, nil, fmt.Errorf("old session loop did not exit cleanly, cannot safely resume")
 	}
-	m.logf("[SessionManager] Old loop cancelled for session %s", sess.ID)
+	m.logf("[SessionManager] Old loop canceled for session %s", sess.ID)
 
 	return sess, ack, nil
 }
@@ -314,7 +314,7 @@ func (m *SessionManager) RemoveSession(id SessionID, reason string) {
 		return
 	}
 
-	// Send CloseFrame BEFORE cancelling context so the stream is still usable
+	// Send CloseFrame BEFORE canceling context so the stream is still usable
 	sess.CloseStream(reason)
 	sess.cancel()
 	sess.sshdConn.Close()
@@ -345,7 +345,7 @@ func (m *SessionManager) cleanupInactiveSessions(threshold time.Duration, reason
 
 		if idle > threshold {
 			logf("[SessionManager] Session %s: idle=%v, reason=%s", sess, idle.Round(time.Second), reason)
-			// Send CloseFrame BEFORE cancelling context so the stream is still usable
+			// Send CloseFrame BEFORE canceling context so the stream is still usable
 			sess.CloseStream(reason)
 			sess.cancel()
 			if sess.sshdConn != nil {

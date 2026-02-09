@@ -30,4 +30,3 @@ func getParentPID(pid int) (int, error) {
 	}
 	return strconv.Atoi(strings.TrimSpace(string(output)))
 }
-

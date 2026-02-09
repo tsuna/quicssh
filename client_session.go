@@ -160,7 +160,7 @@ func (cs *ClientSession) Resume(stream io.ReadWriteCloser) ([]DataFrame, error) 
 
 // SendData sends data through the session layer.
 // The data is buffered for potential replay on reconnect.
-func (cs *ClientSession) SendData(ctx context.Context, payload []byte) error {
+func (cs *ClientSession) SendData(_ context.Context, payload []byte) error {
 	cs.mu.Lock()
 	defer cs.mu.Unlock()
 
@@ -208,7 +208,7 @@ func (cs *ClientSession) SendAck() error {
 		return nil
 	}
 
-	lastRecvSeq := cs.Session.LastRecvSeq()
+	lastRecvSeq := cs.LastRecvSeq()
 	if lastRecvSeq == 0 {
 		return nil // Nothing received yet
 	}
@@ -259,12 +259,12 @@ func (cs *ClientSession) DumpStats() {
 	}
 	cs.mu.Unlock()
 
-	lastSent, lastRecv := cs.Session.ResumeState()
-	sendBufSize := cs.Session.sendBuffer.Size()
-	sendBufFrames := cs.Session.sendBuffer.Len()
-	sendBufMinSeq := cs.Session.sendBuffer.MinSeq()
-	sendBufMaxSeq := cs.Session.sendBuffer.MaxSeq()
-	reconnectCount, lastReconnect := cs.Session.ReconnectStats()
+	lastSent, lastRecv := cs.ResumeState()
+	sendBufSize := cs.sendBuffer.Size()
+	sendBufFrames := cs.sendBuffer.Len()
+	sendBufMinSeq := cs.sendBuffer.MinSeq()
+	sendBufMaxSeq := cs.sendBuffer.MaxSeq()
+	reconnectCount, lastReconnect := cs.ReconnectStats()
 
 	// Always log to stderr regardless of --verbose since this is triggered by SIGUSR1.
 	// Use \r\n because the terminal may be in raw mode (interactive SSH session),
@@ -281,7 +281,7 @@ func (cs *ClientSession) DumpStats() {
 			"  QUIC Stats: RTT=%v (min=%v, σ=%v), sent=%s/%dpkts, recv=%s/%dpkts, lost=%s/%dpkts\r\n"+
 			"=== End Session Dump ===\r\n",
 		now.Format("2006/01/02 15:04:05"),
-		cs.Session.ID, cs.clientPID, cs.grandparentProcess,
+		cs.ID, cs.clientPID, cs.grandparentProcess,
 		connected, reconnectCount, timeAgo(lastReconnect, now),
 		sendBufSize, sendBufFrames, sendBufMinSeq, sendBufMaxSeq,
 		lastSent, lastRecv,
