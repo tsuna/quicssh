@@ -42,7 +42,7 @@ type UDPTransporter struct {
 }
 
 // NewTransport creates a real UDP transport.
-func (t *UDPTransporter) NewTransport(ctx context.Context) (*quic.Transport, error) {
+func (t *UDPTransporter) NewTransport(_ context.Context) (*quic.Transport, error) {
 	srcAddr, err := net.ResolveUDPAddr("udp", t.LocalAddr)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve local address: %w", err)
@@ -63,7 +63,7 @@ func (t *UDPTransporter) NewTransport(ctx context.Context) (*quic.Transport, err
 }
 
 // RemoteAddr resolves DNS to get the server address.
-func (t *UDPTransporter) RemoteAddr(ctx context.Context) (net.Addr, error) {
+func (t *UDPTransporter) RemoteAddr(_ context.Context) (net.Addr, error) {
 	remoteAddrStr := fmt.Sprintf("%s:%d", t.RemoteHost, t.RemotePort)
 	udpAddr, err := net.ResolveUDPAddr("udp", remoteAddrStr)
 	if err != nil {
@@ -144,7 +144,7 @@ func client(c *cli.Context) error {
 		if skipVerifyHostname {
 			log.Printf("WARNING: Skipping hostname verification (certificate is still verified)")
 			config.InsecureSkipVerify = true
-			config.VerifyPeerCertificate = func(rawCerts [][]byte, verifiedChains [][]*x509.Certificate) error {
+			config.VerifyPeerCertificate = func(rawCerts [][]byte, _ [][]*x509.Certificate) error {
 				// Parse the certificate
 				if len(rawCerts) == 0 {
 					return fmt.Errorf("no certificates provided")
@@ -433,7 +433,7 @@ func runSessionLoopWithReconnect(ctx context.Context, clientSession *ClientSessi
 
 		// Check if parent context is done
 		if ctx.Err() != nil {
-			logf("Parent context cancelled: %v", ctx.Err())
+			logf("Parent context canceled: %v", ctx.Err())
 			return ctx.Err()
 		}
 
@@ -543,7 +543,7 @@ func containsImpl(s, substr string) bool {
 }
 
 // attemptReconnect tries to establish a new QUIC connection and resume the session.
-// It uses exponential backoff and retries indefinitely until the context is cancelled.
+// It uses exponential backoff and retries indefinitely until the context is canceled.
 func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *sessionLayerConfig) error {
 	logf := cfg.logf
 
@@ -561,7 +561,7 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 	for {
 		attempt++
 
-		// Check if context is cancelled
+		// Check if context is canceled
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
@@ -701,16 +701,16 @@ func attemptReconnect(ctx context.Context, clientSession *ClientSession, cfg *se
 }
 
 // nextBackoff calculates the next backoff duration with exponential growth up to a maximum.
-func nextBackoff(current, max time.Duration, factor float64) time.Duration {
+func nextBackoff(current, maxBackoff time.Duration, factor float64) time.Duration {
 	next := time.Duration(float64(current) * factor)
-	if next > max {
-		return max
+	if next > maxBackoff {
+		return maxBackoff
 	}
 	return next
 }
 
-// sleepWithContext sleeps for the given duration or until the context is cancelled.
-// Returns true if the sleep completed, false if the context was cancelled.
+// sleepWithContext sleeps for the given duration or until the context is canceled.
+// Returns true if the sleep completed, false if the context was canceled.
 func sleepWithContext(ctx context.Context, d time.Duration) bool {
 	select {
 	case <-time.After(d):
@@ -750,7 +750,7 @@ func clientStdinToSession(ctx context.Context, session *ClientSession, stdinCh <
 		// Wait for data from stdin channel or context cancellation
 		select {
 		case <-ctx.Done():
-			logf("[stdin] Context cancelled")
+			logf("[stdin] Context canceled")
 			return ctx.Err()
 		case data, ok := <-stdinCh:
 			if !ok {
@@ -845,7 +845,7 @@ func clientSessionToStdout(ctx context.Context, session *ClientSession, logf log
 // Used when bulk transfer tools (scp, rsync, sftp) are detected.
 // Uses io.Copy which automatically uses splice() on Linux when copying
 // between the TCP socket and stdin/stdout pipes.
-func tcpPassthrough(ctx context.Context, host string, port int) error {
+func tcpPassthrough(_ context.Context, host string, port int) error {
 	addr := fmt.Sprintf("%s:%d", host, port)
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {

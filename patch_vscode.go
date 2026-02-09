@@ -113,7 +113,7 @@ func warnUnpatchedVSCodeExtensions() {
 	fmt.Fprintf(os.Stderr, "Run `%s patch-vscode-remote-ssh` to patch and get the full benefits of quicssh with VS Code.\n", os.Args[0])
 }
 
-func patchVSCodeRemoteSSH(c *cli.Context) error {
+func patchVSCodeRemoteSSH(_ *cli.Context) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)
@@ -211,7 +211,7 @@ func applyPatch(filePath string, spec patchSpec) error {
 }
 
 // unpatchVSCodeRemoteSSH restores the original files from backups
-func unpatchVSCodeRemoteSSH(c *cli.Context) error {
+func unpatchVSCodeRemoteSSH(_ *cli.Context) error {
 	homeDir, err := os.UserHomeDir()
 	if err != nil {
 		return fmt.Errorf("failed to get home directory: %w", err)

@@ -34,4 +34,3 @@ func configureUDPSocket(conn *net.UDPConn) error {
 	}
 	return setsockoptErr
 }
-

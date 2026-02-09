@@ -1,0 +1,50 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - master
+      - v2
+
+jobs:
+  ci:
+    name: CI
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        task: [test, lint, build-linux-amd64, build-darwin-arm64]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Set up Go
+        uses: actions/setup-go@v6
+        with:
+          go-version: '1.25'
+
+      - name: Run tests
+        if: matrix.task == 'test'
+        run: go test -v -race -coverprofile=coverage.out ./...
+
+      - name: Upload coverage
+        if: matrix.task == 'test'
+        uses: actions/upload-artifact@v6
+        with:
+          name: coverage-report
+          path: coverage.out
+
+      - name: Run golangci-lint
+        if: matrix.task == 'lint'
+        uses: golangci/golangci-lint-action@v9
+        with:
+          version: latest
+
+      - name: Build linux-amd64
+        if: matrix.task == 'build-linux-amd64'
+        run: GOOS=linux GOARCH=amd64 go build -v .
+
+      - name: Build darwin-arm64
+        if: matrix.task == 'build-darwin-arm64'
+        run: GOOS=darwin GOARCH=arm64 go build -v .

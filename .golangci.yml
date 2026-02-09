@@ -1,34 +1,26 @@
-run:
-  deadline: 1m
-  tests: false
-  #skip-files:
-  #  - ".*\\.gen\\.go"
+version: "2"
 
-linters-settings:
-  golint:
-    min-confidence: 0
-  maligned:
-    suggest-new: true
-  goconst:
-    min-len: 5
-    min-occurrences: 4
-  misspell:
-    locale: US
+run:
+  tests: false
 
 linters:
-  disable-all: true
+  default: none
   enable:
     - goconst
     - misspell
-    - deadcode
-    - misspell
-    - structcheck
-    - errcheck
     - unused
-    - varcheck
     - staticcheck
     - unconvert
+    - ineffassign
+    - revive
+  settings:
+    goconst:
+      min-len: 5
+      min-occurrences: 4
+    misspell:
+      locale: US
+
+formatters:
+  enable:
     - gofmt
     - goimports
-    - golint
-    - ineffassign
