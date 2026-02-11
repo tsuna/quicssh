@@ -827,8 +827,9 @@ func clientSessionToStdout(ctx context.Context, session *ClientSession, logf log
 			}
 
 		case *AckFrame:
-			// Handle ACK frames from old servers for backward compatibility
-			logf("[stdout] Received ACK seq=%d", f.Seq)
+			// Handle application-level ACK from server.
+			// The server sends these after processing client DataFrames,
+			// allowing the client to clear its send buffer.
 			session.HandleAck(f)
 
 		case *CloseFrame:
