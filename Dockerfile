@@ -1,5 +1,5 @@
 # build
-FROM            golang:1.25-alpine as builder
+FROM            golang:1.26-alpine as builder
 RUN             apk add --no-cache git gcc musl-dev make
 WORKDIR         /go/src/github.com/tsuna/quicssh
 COPY            go.* ./
