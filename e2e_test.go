@@ -324,6 +324,150 @@ func startEchoServer(t *testing.T) (string, func()) {
 	return listener.Addr().String(), cleanup
 }
 
+// TestE2E_LargeUpload tests that large amounts of data can be sent from
+// client to server without deadlocking. This reproduces the VS Code server
+// tarball upload scenario where the client sends ~50MB+ through the session
+// layer. Without server-to-client AckFrames, the client's send buffer fills
+// up (16MB) and the session deadlocks because nothing clears the buffer.
+func TestE2E_LargeUpload(t *testing.T) {
+	// Start echo server as fake sshd
+	sshdAddr, cleanupSshd := startEchoServer(t)
+	defer cleanupSshd()
+
+	// Create fake packet connections
+	clientConn, serverConn := NewFakePacketConnPair(1000)
+
+	// Create TLS config
+	serverTLS, err := generateTestTLSConfig()
+	if err != nil {
+		t.Fatalf("Failed to generate TLS config: %v", err)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+
+	const bufferSize = DefaultBufferSize
+
+	// Create server
+	serverTransport := &quic.Transport{Conn: serverConn}
+	// Use a quiet logger to avoid per-frame t.Logf overhead during bulk transfer.
+	quietLogf := func(format string, args ...interface{}) {}
+
+	serverConfig := &TestServerConfig{
+		TLSConfig:           serverTLS,
+		QUICConfig:          testQuicConfig(),
+		SSHDAddr:            sshdAddr,
+		SessionLayerEnabled: true,
+		SessionTimeout:      5 * time.Minute,
+		BufferSize:          bufferSize,
+		Logf:                quietLogf,
+	}
+
+	server, err := NewTestServer(ctx, serverTransport, serverConfig)
+	if err != nil {
+		t.Fatalf("Failed to create server: %v", err)
+	}
+
+	go func() { server.Serve() }()
+
+	// Create client transport and connect
+	clientTransport := &quic.Transport{Conn: clientConn}
+	clientTLS := generateTestClientTLSConfig()
+	quicConfig := testQuicConfig()
+
+	session, err := clientTransport.Dial(ctx, serverConn.LocalAddr(), clientTLS, quicConfig)
+	if err != nil {
+		t.Fatalf("Client dial failed: %v", err)
+	}
+
+	stream, err := session.OpenStreamSync(ctx)
+	if err != nil {
+		t.Fatalf("Failed to open stream: %v", err)
+	}
+
+	clientSession, err := NewClientSession(bufferSize, quietLogf)
+	if err != nil {
+		t.Fatalf("Failed to create client session: %v", err)
+	}
+	if err := clientSession.Connect(stream); err != nil {
+		t.Fatalf("Client session connect failed: %v", err)
+	}
+
+	// Give server time to process
+	time.Sleep(100 * time.Millisecond)
+
+	// Send 32MB of data in 32KB chunks — 2x the 16MB buffer.
+	// Without server→client AckFrames, this would deadlock when the buffer fills.
+	const totalData = 32 * 1024 * 1024
+	const chunkSize = 32 * 1024
+	totalChunks := totalData / chunkSize
+	chunk := make([]byte, chunkSize)
+
+	// Receiver goroutine: read echoed data and handle AckFrames
+	receiveDone := make(chan struct{})
+	var totalReceived atomic.Int64
+	go func() {
+		defer close(receiveDone)
+		for {
+			frame, err := ReadFrame(stream)
+			if err != nil {
+				return
+			}
+			switch f := frame.(type) {
+			case *DataFrame:
+				isNew, _ := clientSession.HandleData(f)
+				if isNew {
+					totalReceived.Add(int64(len(f.Payload)))
+				}
+				_ = clientSession.SendAck()
+			case *AckFrame:
+				clientSession.HandleAck(f)
+			}
+		}
+	}()
+
+	// Send all chunks with backpressure (same as production client)
+	for i := 0; i < totalChunks; i++ {
+		for clientSession.SendBufferIsFull(chunkSize) {
+			select {
+			case <-ctx.Done():
+				t.Fatalf("Context canceled while waiting for buffer space at chunk %d/%d", i+1, totalChunks)
+			case <-time.After(10 * time.Millisecond):
+			}
+		}
+		if err := clientSession.SendData(ctx, chunk); err != nil {
+			t.Fatalf("SendData chunk %d/%d failed: %v", i+1, totalChunks, err)
+		}
+	}
+	t.Logf("Sent %d chunks (%d bytes)", totalChunks, totalData)
+
+	// Wait for all echoed data to arrive
+	deadline := time.After(15 * time.Second)
+	for totalReceived.Load() < totalData {
+		select {
+		case <-deadline:
+			t.Fatalf("Timeout waiting for echo: received %d/%d bytes", totalReceived.Load(), totalData)
+		case <-receiveDone:
+			if totalReceived.Load() < totalData {
+				t.Fatalf("Receiver exited early: received %d/%d bytes", totalReceived.Load(), totalData)
+			}
+		default:
+			time.Sleep(10 * time.Millisecond)
+		}
+	}
+
+	t.Logf("Received all %d bytes echoed back", totalReceived.Load())
+
+	// Cleanup
+	cleanupSshd()
+	clientConn.Close()
+	serverConn.Close()
+	stream.Close()
+	session.CloseWithError(0, "test done")
+	server.Close()
+	clientTransport.Close()
+}
+
 // TestE2E_BasicConnectivity tests basic QUIC + session layer connectivity.
 // This test verifies that:
 // 1. Server can be created with fake transport
@@ -1002,6 +1146,9 @@ func TestE2E_TortureTest(t *testing.T) {
 						// Send app-level ACK so the server can clear its send buffer.
 						// Ignore errors: if the connection died, the next ReadFrame will catch it.
 						_ = clientSession.SendAck()
+					} else if ackFrame, ok := frame.(*AckFrame); ok {
+						// Handle ACK from server so the client can clear its send buffer.
+						clientSession.HandleAck(ackFrame)
 					}
 				}
 			}()

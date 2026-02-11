@@ -162,19 +162,29 @@ func (cs *ClientSession) Resume(stream io.ReadWriteCloser) ([]DataFrame, error) 
 // The data is buffered for potential replay on reconnect.
 func (cs *ClientSession) SendData(_ context.Context, payload []byte) error {
 	cs.mu.Lock()
-	defer cs.mu.Unlock()
-
 	if !cs.connected {
+		cs.mu.Unlock()
 		return fmt.Errorf("not connected")
 	}
-
 	frame, err := cs.PrepareData(payload)
 	if err != nil {
+		cs.mu.Unlock()
 		return err
 	}
+	// Capture stream and encode buffer, then release the lock BEFORE writing.
+	// The QUIC stream has its own internal mutex for write serialization.
+	// Holding cs.mu during the write would deadlock: if the QUIC flow control
+	// window is full, this write blocks, preventing the receiver goroutine from
+	// calling SendAck (which needs cs.mu), which prevents reading from the
+	// stream, which prevents the flow control window from opening.
+	stream := cs.stream
+	encBuf := cs.EncodeBuffer()
+	cs.mu.Unlock()
 
-	if err := frame.Encode(cs.stream, cs.EncodeBuffer()); err != nil {
+	if err := frame.Encode(stream, encBuf); err != nil {
+		cs.mu.Lock()
 		cs.connected = false
+		cs.mu.Unlock()
 		return fmt.Errorf("failed to send DATA: %w", err)
 	}
 
@@ -202,14 +212,14 @@ func (cs *ClientSession) ReadFrame() (Frame, error) {
 // This should be called after successfully processing each received DataFrame.
 func (cs *ClientSession) SendAck() error {
 	cs.mu.Lock()
-	defer cs.mu.Unlock()
-
 	if !cs.connected || cs.stream == nil {
+		cs.mu.Unlock()
 		return nil
 	}
 
 	lastRecvSeq := cs.LastRecvSeq()
 	if lastRecvSeq == 0 {
+		cs.mu.Unlock()
 		return nil // Nothing received yet
 	}
 
@@ -218,14 +228,18 @@ func (cs *ClientSession) SendAck() error {
 	// Send ACK when either threshold is reached
 	now := time.Now()
 	if cs.framesSinceAck < ackBatchFrames && now.Sub(cs.lastAckTime) < ackBatchTimeout {
+		cs.mu.Unlock()
 		return nil
 	}
 
 	cs.framesSinceAck = 0
 	cs.lastAckTime = now
+	stream := cs.stream
+	cs.mu.Unlock()
 
+	// Write without holding cs.mu to avoid deadlock (see SendData comment).
 	ack := &AckFrame{Seq: lastRecvSeq}
-	return ack.Encode(cs.stream, nil)
+	return ack.Encode(stream, nil)
 }
 
 // IsConnected returns whether the session is currently connected.

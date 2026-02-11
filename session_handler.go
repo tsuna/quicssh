@@ -201,9 +201,13 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 }
 
 // streamToSSHD reads frames from QUIC stream and writes data to sshd.
-// The client sends application-level AckFrames after processing each DataFrame,
-// which the server uses to clear its send buffer.
+// Both directions send application-level AckFrames so each side can clear
+// its send buffer. The client sends AckFrames for server→client data, and
+// this function sends AckFrames for client→server data.
 func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.Stream, sess *ServerSession, _ string) error {
+	var framesSinceAck int
+	var lastAckTime time.Time
+
 	for {
 		select {
 		case <-ctx.Done():
@@ -240,6 +244,20 @@ func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.St
 			if _, err := sess.SSHDWriter().Write(f.Payload); err != nil {
 				h.logf("[session %s] Failed to write to sshd: %v", sess.ID, err)
 				return fmt.Errorf("failed to write to sshd: %w", err)
+			}
+
+			// Send ACK to client so it can clear its send buffer.
+			// Without this, the client's buffer fills up during large uploads
+			// (e.g., VS Code server tarball) and deadlocks.
+			framesSinceAck++
+			now := time.Now()
+			if framesSinceAck >= ackBatchFrames || now.Sub(lastAckTime) >= ackBatchTimeout {
+				ack := &AckFrame{Seq: sess.LastRecvSeq()}
+				if err := ack.Encode(stream, nil); err != nil {
+					return fmt.Errorf("failed to send ACK: %w", err)
+				}
+				framesSinceAck = 0
+				lastAckTime = now
 			}
 
 			// Update activity
