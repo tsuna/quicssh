@@ -784,6 +784,7 @@ func clientStdinToSession(ctx context.Context, session *ClientSession, stdinCh <
 // After processing each DataFrame, it sends an application-level AckFrame
 // to the server so it can clear its send buffer.
 func clientSessionToStdout(ctx context.Context, session *ClientSession, logf logFunc) error {
+	readBuf := make([]byte, MaxPayloadSize)
 	for {
 		select {
 		case <-ctx.Done():
@@ -791,7 +792,7 @@ func clientSessionToStdout(ctx context.Context, session *ClientSession, logf log
 		default:
 		}
 
-		frame, err := session.ReadFrame()
+		frame, err := session.ReadFrame(readBuf)
 		if err != nil {
 			if err == io.EOF {
 				return nil

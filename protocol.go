@@ -24,9 +24,12 @@ const (
 // dataFrameHeaderSize is the size of the DataFrame header (type + seq + length).
 const dataFrameHeaderSize = 1 + 8 + 2 // 11 bytes
 
+// MaxPayloadSize is the maximum size of a DataFrame payload (64KB, fits in uint16).
+const MaxPayloadSize = 65535
+
 // dataFrameBufferSize is the size of buffer needed for encoding DataFrames.
-// It holds the header plus max payload (64KB).
-const dataFrameBufferSize = dataFrameHeaderSize + 65535
+// It holds the header plus max payload.
+const dataFrameBufferSize = dataFrameHeaderSize + MaxPayloadSize
 
 // SessionID is a unique identifier for a session (UUID).
 type SessionID [16]byte
@@ -145,7 +148,7 @@ func (f *DataFrame) Type() uint8 { return FrameTypeData }
 // The buffer must be at least DataFrameBufferSize bytes.
 func (f *DataFrame) Encode(w io.Writer, buf []byte) error {
 	payloadLen := len(f.Payload)
-	if payloadLen > 65535 {
+	if payloadLen > MaxPayloadSize {
 		return errors.New("payload too large (max 65535 bytes)")
 	}
 
@@ -207,7 +210,11 @@ var ErrSessionLayerMismatch = errors.New("received SSH protocol instead of sessi
 var ErrSessionNotFound = errors.New("session not found")
 
 // ReadFrame reads and decodes a frame from the reader.
-func ReadFrame(r io.Reader) (Frame, error) {
+// If buf is non-nil, it is used for DataFrame payloads to avoid allocation.
+// The buffer must be at least MaxPayloadSize bytes. The returned DataFrame.Payload
+// is a slice of buf, so it is only valid until the next call. Pass nil to allocate
+// a new buffer for each frame.
+func ReadFrame(r io.Reader, buf []byte) (Frame, error) {
 	var frameType uint8
 	if err := binary.Read(r, binary.BigEndian, &frameType); err != nil {
 		return nil, err
@@ -221,7 +228,7 @@ func ReadFrame(r io.Reader) (Frame, error) {
 	case FrameTypeResumeAck:
 		return readResumeAckFrame(r)
 	case FrameTypeData:
-		return readDataFrame(r)
+		return readDataFrame(r, buf)
 	case FrameTypeAck:
 		return readAckFrame(r)
 	case FrameTypeClose:
@@ -284,7 +291,7 @@ func readResumeAckFrame(r io.Reader) (*ResumeAckFrame, error) {
 	return f, nil
 }
 
-func readDataFrame(r io.Reader) (*DataFrame, error) {
+func readDataFrame(r io.Reader, buf []byte) (*DataFrame, error) {
 	f := &DataFrame{}
 	if err := binary.Read(r, binary.BigEndian, &f.Seq); err != nil {
 		return nil, err
@@ -293,7 +300,11 @@ func readDataFrame(r io.Reader) (*DataFrame, error) {
 	if err := binary.Read(r, binary.BigEndian, &length); err != nil {
 		return nil, err
 	}
-	f.Payload = make([]byte, length)
+	if buf != nil && len(buf) >= int(length) {
+		f.Payload = buf[:length]
+	} else {
+		f.Payload = make([]byte, length)
+	}
 	if _, err := io.ReadFull(r, f.Payload); err != nil {
 		return nil, err
 	}

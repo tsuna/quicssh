@@ -52,7 +52,7 @@ func TestNewSessionFrame(t *testing.T) {
 	}
 
 	// Decode
-	decoded, err := ReadFrame(&buf)
+	decoded, err := ReadFrame(&buf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -87,7 +87,7 @@ func TestNewSessionFrame_EmptyGrandparent(t *testing.T) {
 	}
 
 	// Decode
-	decoded, err := ReadFrame(&buf)
+	decoded, err := ReadFrame(&buf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -117,7 +117,7 @@ func TestResumeSessionFrame(t *testing.T) {
 		t.Fatalf("Encode failed: %v", err)
 	}
 
-	decoded, err := ReadFrame(&buf)
+	decoded, err := ReadFrame(&buf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -148,7 +148,7 @@ func TestResumeAckFrame(t *testing.T) {
 		t.Fatalf("Encode failed: %v", err)
 	}
 
-	decoded, err := ReadFrame(&buf)
+	decoded, err := ReadFrame(&buf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -178,7 +178,7 @@ func TestDataFrame(t *testing.T) {
 		t.Fatalf("Encode failed: %v", err)
 	}
 
-	decoded, err := ReadFrame(&buf)
+	decoded, err := ReadFrame(&buf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -207,7 +207,7 @@ func TestDataFrameEmpty(t *testing.T) {
 		t.Fatalf("Encode failed: %v", err)
 	}
 
-	decoded, err := ReadFrame(&buf)
+	decoded, err := ReadFrame(&buf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -234,7 +234,7 @@ func TestAckFrame(t *testing.T) {
 		t.Fatalf("Encode failed: %v", err)
 	}
 
-	decoded, err := ReadFrame(&buf)
+	decoded, err := ReadFrame(&buf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -258,7 +258,7 @@ func TestCloseFrame(t *testing.T) {
 		t.Fatalf("Encode failed: %v", err)
 	}
 
-	decoded, err := ReadFrame(&buf)
+	decoded, err := ReadFrame(&buf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -282,7 +282,7 @@ func TestCloseFrameEmpty(t *testing.T) {
 		t.Fatalf("Encode failed: %v", err)
 	}
 
-	decoded, err := ReadFrame(&buf)
+	decoded, err := ReadFrame(&buf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
