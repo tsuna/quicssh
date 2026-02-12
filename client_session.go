@@ -126,7 +126,7 @@ func (cs *ClientSession) Resume(stream io.ReadWriteCloser) ([]DataFrame, error) 
 	cs.logf("[ClientSession] Sent RESUME_SESSION (lastSent=%d, lastRecv=%d)", lastSentSeq, lastRecvSeq)
 
 	// Read RESUME_ACK
-	respFrame, err := ReadFrame(stream)
+	respFrame, err := ReadFrame(stream, nil)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read RESUME_ACK: %w", err)
 	}
@@ -192,7 +192,8 @@ func (cs *ClientSession) SendData(_ context.Context, payload []byte) error {
 }
 
 // ReadFrame reads the next frame from the stream.
-func (cs *ClientSession) ReadFrame() (Frame, error) {
+// See ReadFrame in protocol.go for buffer requirements.
+func (cs *ClientSession) ReadFrame(buf []byte) (Frame, error) {
 	cs.mu.Lock()
 	stream := cs.stream
 	cs.mu.Unlock()
@@ -201,7 +202,7 @@ func (cs *ClientSession) ReadFrame() (Frame, error) {
 		return nil, fmt.Errorf("not connected")
 	}
 
-	return ReadFrame(stream)
+	return ReadFrame(stream, buf)
 }
 
 // SendAck notifies the server of the client's receive progress so it can clear

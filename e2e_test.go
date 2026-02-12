@@ -409,7 +409,7 @@ func TestE2E_LargeUpload(t *testing.T) {
 	go func() {
 		defer close(receiveDone)
 		for {
-			frame, err := ReadFrame(stream)
+			frame, err := ReadFrame(stream, nil)
 			if err != nil {
 				return
 			}
@@ -561,7 +561,7 @@ func TestE2E_BasicConnectivity(t *testing.T) {
 	receivedData := make(chan []byte, 1)
 	go func() {
 		for {
-			frame, err := ReadFrame(stream)
+			frame, err := ReadFrame(stream, nil)
 			if err != nil {
 				t.Logf("ReadFrame error: %v", err)
 				return
@@ -686,7 +686,7 @@ func TestE2E_ConnectionRecovery(t *testing.T) {
 	receivedData := make(chan []byte, 10)
 	go func() {
 		for {
-			frame, err := ReadFrame(stream)
+			frame, err := ReadFrame(stream, nil)
 			if err != nil {
 				return
 			}
@@ -824,7 +824,7 @@ func TestE2E_ConnectionRecovery(t *testing.T) {
 	receivedData2 := make(chan []byte, 10)
 	go func() {
 		for {
-			frame, err := ReadFrame(stream2)
+			frame, err := ReadFrame(stream2, nil)
 			if err != nil {
 				return
 			}
@@ -1091,7 +1091,7 @@ func TestE2E_TortureTest(t *testing.T) {
 					default:
 					}
 
-					frame, err := ReadFrame(stream)
+					frame, err := ReadFrame(stream, nil)
 					if err != nil {
 						if clientCtx.Err() != nil {
 							return

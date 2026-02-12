@@ -269,7 +269,7 @@ func runThroughputBenchmark(b *testing.B, cfg benchConfig) {
 			go func() {
 				defer close(receiveDone)
 				for {
-					frame, err := ReadFrame(stream)
+					frame, err := ReadFrame(stream, nil)
 					if err != nil {
 						return
 					}

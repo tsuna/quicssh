@@ -59,7 +59,7 @@ func TestClientSession_Connect(t *testing.T) {
 	}
 
 	// Verify NEW_SESSION was written
-	frame, err := ReadFrame(stream.writeBuf)
+	frame, err := ReadFrame(stream.writeBuf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -93,7 +93,7 @@ func TestClientSession_SendData(t *testing.T) {
 	}
 
 	// Verify DATA frame was written
-	frame, err := ReadFrame(stream.writeBuf)
+	frame, err := ReadFrame(stream.writeBuf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -115,7 +115,7 @@ func TestClientSession_SendData(t *testing.T) {
 		t.Fatalf("SendData failed: %v", err)
 	}
 
-	frame, _ = ReadFrame(stream.writeBuf)
+	frame, _ = ReadFrame(stream.writeBuf, nil)
 	data = frame.(*DataFrame)
 	if data.Seq != 2 {
 		t.Errorf("Expected seq 2, got %d", data.Seq)
@@ -402,7 +402,7 @@ func TestMultipleDataFrames(t *testing.T) {
 
 	// Read them back
 	for i := 1; i <= 5; i++ {
-		frame, err := ReadFrame(stream.writeBuf)
+		frame, err := ReadFrame(stream.writeBuf, nil)
 		if err != nil {
 			t.Fatalf("ReadFrame %d failed: %v", i, err)
 		}

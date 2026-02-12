@@ -42,7 +42,7 @@ func (h *SessionStreamHandler) HandleStream(ctx context.Context, stream *quic.St
 	h.logf("[stream %v from %s] Waiting for session frame...", streamID, clientAddr)
 
 	// Read the first frame to determine session type
-	frame, err := ReadFrame(stream)
+	frame, err := ReadFrame(stream, nil)
 	if err != nil {
 		return fmt.Errorf("failed to read session frame: %w", err)
 	}
@@ -207,6 +207,7 @@ func (h *SessionStreamHandler) runSessionLoop(stream *quic.Stream, sess *ServerS
 func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.Stream, sess *ServerSession, _ string) error {
 	var framesSinceAck int
 	var lastAckTime time.Time
+	readBuf := make([]byte, MaxPayloadSize)
 
 	for {
 		select {
@@ -215,7 +216,7 @@ func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.St
 		default:
 		}
 
-		frame, err := ReadFrame(stream)
+		frame, err := ReadFrame(stream, readBuf)
 		if err != nil {
 			return err
 		}

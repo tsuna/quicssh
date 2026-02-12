@@ -245,7 +245,7 @@ func TestSendAck_Batching(t *testing.T) {
 	if stream.writeBuf.Len() == 0 {
 		t.Fatal("Expected immediate ACK on first call (lastAckTime is zero)")
 	}
-	frame, _ := ReadFrame(stream.writeBuf)
+	frame, _ := ReadFrame(stream.writeBuf, nil)
 	if ack, ok := frame.(*AckFrame); !ok || ack.Seq != 1 {
 		t.Fatalf("Expected AckFrame seq=1, got %T %v", frame, frame)
 	}
@@ -268,7 +268,7 @@ func TestSendAck_Batching(t *testing.T) {
 		t.Error("Expected ACK to be sent after reaching frame threshold")
 	}
 
-	frame, err = ReadFrame(stream.writeBuf)
+	frame, err = ReadFrame(stream.writeBuf, nil)
 	if err != nil {
 		t.Fatalf("ReadFrame failed: %v", err)
 	}
@@ -295,7 +295,7 @@ func TestSendAck_TimeThreshold(t *testing.T) {
 	cs.SendAck() // First call triggers immediately (lastAckTime is zero)
 
 	// Read the ACK
-	frame, _ := ReadFrame(stream.writeBuf)
+	frame, _ := ReadFrame(stream.writeBuf, nil)
 	if _, ok := frame.(*AckFrame); !ok {
 		t.Fatalf("Expected initial AckFrame, got %T", frame)
 	}
