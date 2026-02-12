@@ -92,7 +92,7 @@ func client(c *cli.Context) error {
 	}()
 	defer signal.Stop(sigCh)
 
-	logf, logFile := createLogFunc(c)
+	logf, verbose, logFile := createLogFunc(c)
 	if logFile != nil {
 		defer logFile.Close()
 	}
@@ -184,9 +184,9 @@ func client(c *cli.Context) error {
 		return fmt.Errorf("invalid port %q: %w", remotePortStr, err)
 	}
 
-	// Resolve DNS once upfront - this cached address will be used for the
-	// initial connection, but may be re-resolved during path migration
-	udpAddr, err := net.ResolveUDPAddr("udp", remoteAddrStr)
+	// Resolve DNS upfront - retry until successful since the VPN
+	// (and thus DNS for VPN-only hosts) may not be up yet.
+	udpAddr, err := keepTryingToResolve(ctx, remoteAddrStr, verbose, logf)
 	if err != nil {
 		return err
 	}
@@ -1042,4 +1042,41 @@ func (pm *pathMigrator) migrate(ctx context.Context) error {
 	pm.logf("[pathMigrator] Migrated to new path: local=%v remote=%v", newConn.LocalAddr(), pm.originalServer)
 
 	return nil
+}
+
+// keepTryingToResolve resolves a UDP address, retrying every second until
+// successful or the context is canceled. This handles the case where the
+// VPN (and thus DNS for VPN-only hosts) isn't up yet when quicssh starts.
+func keepTryingToResolve(ctx context.Context, addr string, verbose bool, logf logFunc) (*net.UDPAddr, error) {
+	udpAddr, err := net.ResolveUDPAddr("udp", addr)
+	if err == nil {
+		return udpAddr, nil
+	}
+	logf("DNS resolution failed for %s: %v (retrying...)", addr, err)
+	if !verbose {
+		fmt.Fprintf(os.Stderr, "Waiting for %s to resolve...", addr)
+	}
+	ticker := time.NewTicker(1 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			if !verbose {
+				fmt.Fprintln(os.Stderr)
+			}
+			return nil, fmt.Errorf("DNS resolution failed for %s: %w", addr, err)
+		case <-ticker.C:
+		}
+		udpAddr, err = net.ResolveUDPAddr("udp", addr)
+		if err == nil {
+			if !verbose {
+				fmt.Fprintln(os.Stderr, " ok")
+			}
+			return udpAddr, nil
+		}
+		logf("DNS resolution failed for %s: %v (retrying...)", addr, err)
+		if !verbose {
+			fmt.Fprint(os.Stderr, ".")
+		}
+	}
 }

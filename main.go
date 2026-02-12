@@ -300,25 +300,25 @@ type logFunc func(format string, v ...interface{})
 // If --verbose is set, logs to stderr.
 // If QUICSSH_VERBOSE=1, logs to stderr.
 // If QUICSSH_VERBOSE starts with "/", logs to that file path.
-// Returns the logFunc and an optional file that should be closed when done.
-func createLogFunc(c *cli.Context) (logFunc, *os.File) {
+// Returns the logFunc, whether verbose mode is active, and an optional file that should be closed when done.
+func createLogFunc(c *cli.Context) (logFunc, bool, *os.File) {
 	// Check --verbose flag first (takes precedence)
 	if c.Bool("verbose") {
 		return func(format string, v ...interface{}) {
 			log.Printf(format, v...)
-		}, nil
+		}, true, nil
 	}
 
 	// Check QUICSSH_VERBOSE env var
 	verboseEnv := os.Getenv("QUICSSH_VERBOSE")
 	if verboseEnv == "" {
-		return func(_ string, _ ...interface{}) {}, nil
+		return func(_ string, _ ...interface{}) {}, false, nil
 	}
 
 	if verboseEnv == "1" {
 		return func(format string, v ...interface{}) {
 			log.Printf(format, v...)
-		}, nil
+		}, true, nil
 	}
 
 	if strings.HasPrefix(verboseEnv, "/") {
@@ -326,16 +326,16 @@ func createLogFunc(c *cli.Context) (logFunc, *os.File) {
 		f, err := os.OpenFile(verboseEnv, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 		if err != nil {
 			log.Printf("Warning: failed to open log file %s: %v", verboseEnv, err)
-			return func(_ string, _ ...interface{}) {}, nil
+			return func(_ string, _ ...interface{}) {}, false, nil
 		}
 		logger := log.New(f, "", log.LstdFlags)
 		return func(format string, v ...interface{}) {
 			logger.Printf(format, v...)
-		}, f
+		}, true, f
 	}
 
 	// Unknown value, ignore
-	return func(_ string, _ ...interface{}) {}, nil
+	return func(_ string, _ ...interface{}) {}, false, nil
 }
 
 // debugFrames is true if per-frame debug logging is enabled via QUICSSH_DEBUG_FRAMES=1.

@@ -98,7 +98,7 @@ func server(c *cli.Context) error {
 	var cm *certManager
 
 	// Set up verbose logging
-	logf, logFile := createLogFunc(c)
+	logf, _, logFile := createLogFunc(c)
 	if logFile != nil {
 		defer logFile.Close()
 	}
