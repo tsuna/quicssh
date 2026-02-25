@@ -29,6 +29,14 @@ var patchSpecs = []patchSpec{
 		description:  "ExecServerCache ping timeout (3s -> 25h)",
 	},
 	{
+		filename:     "extension.js",
+		searchPrefix: `return t.debug("Server delay-shutdown request failed: "+e.message),`,
+		searchSuffix: `}}`,
+		oldValue:     "!1",
+		newValue:     "!0",
+		description:  "Health check ignores EPIPE during QUIC reconnection",
+	},
+	{
 		filename:     "localServer.js",
 		searchPrefix: `this.shutdownTimer=setTimeout((()=>{this.dispose(),S(),f("Timed out"),process.exit(0)}),`,
 		searchSuffix: `)}killRemote`,
