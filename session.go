@@ -61,13 +61,16 @@ func NewSequenceBuffer(maxSize int) *SequenceBuffer {
 	}
 }
 
-// Add adds a frame to the buffer. Returns error if buffer is full.
-func (b *SequenceBuffer) Add(seq uint64, payload []byte) error {
+// Add adds a frame to the buffer. Returns the buffered copy of the payload
+// and nil error on success, or nil and ErrBufferFull if the buffer is full.
+// The returned slice is the buffer's own copy, safe to use after the caller's
+// original payload slice is reused.
+func (b *SequenceBuffer) Add(seq uint64, payload []byte) ([]byte, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
 	if b.size+len(payload) > b.maxSize {
-		return ErrBufferFull
+		return nil, ErrBufferFull
 	}
 
 	// Make a copy of the payload
@@ -89,7 +92,7 @@ func (b *SequenceBuffer) Add(seq uint64, payload []byte) error {
 		}
 	}
 
-	return nil
+	return data, nil
 }
 
 // AckUpTo removes all frames with sequence <= seq from the buffer.
@@ -258,15 +261,18 @@ func (s *Session) PrepareData(payload []byte) (*DataFrame, error) {
 	seq := s.nextSendSeq
 	s.nextSendSeq++
 
-	// Buffer the data for potential replay
-	if err := s.sendBuffer.Add(seq, payload); err != nil {
+	// Buffer the data for potential replay.
+	// Use the buffered copy as the DataFrame payload so it remains valid
+	// regardless of what the caller does with its buffer after this call.
+	buffered, err := s.sendBuffer.Add(seq, payload)
+	if err != nil {
 		s.nextSendSeq-- // Rollback
 		return nil, err
 	}
 
 	return &DataFrame{
 		Seq:     seq,
-		Payload: payload,
+		Payload: buffered,
 	}, nil
 }
 

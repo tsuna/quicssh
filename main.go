@@ -60,9 +60,9 @@ func newQUICConfig(idleTimeout time.Duration, bufferSize int) *quic.Config {
 	return &quic.Config{
 		MaxIdleTimeout:                 idleTimeout,
 		KeepAlivePeriod:                keepAliveForIdleTimeout(idleTimeout),
-		InitialStreamReceiveWindow:     streamWindow / 8, // Start smaller, grow as needed
+		InitialStreamReceiveWindow:     streamWindow,
 		MaxStreamReceiveWindow:         streamWindow,
-		InitialConnectionReceiveWindow: connWindow / 8,
+		InitialConnectionReceiveWindow: connWindow,
 		MaxConnectionReceiveWindow:     connWindow,
 		Allow0RTT:                      true, // Enable 0-RTT resumption for faster reconnects
 	}

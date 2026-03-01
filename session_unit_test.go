@@ -388,7 +388,7 @@ func TestSequenceBuffer_AckUpTo_Empty(t *testing.T) {
 func TestSequenceBuffer_IsFull(t *testing.T) {
 	buf := NewSequenceBuffer(100)
 
-	buf.Add(1, make([]byte, 90))
+	buf.Add(1, make([]byte, 90)) //nolint:errcheck
 
 	// 10 bytes left — payload of 10 should NOT be full
 	if buf.IsFull(10) {

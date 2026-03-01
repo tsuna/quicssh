@@ -8,10 +8,10 @@ func TestSequenceBuffer(t *testing.T) {
 	buf := NewSequenceBuffer(1000) // 1KB max
 
 	// Add some frames
-	if err := buf.Add(1, []byte("hello")); err != nil {
+	if _, err := buf.Add(1, []byte("hello")); err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
-	if err := buf.Add(2, []byte("world")); err != nil {
+	if _, err := buf.Add(2, []byte("world")); err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
 
@@ -50,22 +50,22 @@ func TestSequenceBuffer(t *testing.T) {
 func TestSequenceBufferFull(t *testing.T) {
 	buf := NewSequenceBuffer(10) // 10 bytes max
 
-	if err := buf.Add(1, []byte("12345")); err != nil {
+	if _, err := buf.Add(1, []byte("12345")); err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
-	if err := buf.Add(2, []byte("12345")); err != nil {
+	if _, err := buf.Add(2, []byte("12345")); err != nil {
 		t.Fatalf("Add failed: %v", err)
 	}
 
 	// This should fail - buffer is full
-	err := buf.Add(3, []byte("x"))
+	_, err := buf.Add(3, []byte("x"))
 	if err != ErrBufferFull {
 		t.Errorf("Expected ErrBufferFull, got %v", err)
 	}
 
 	// ACK first frame, then add should work
 	buf.AckUpTo(1)
-	if err := buf.Add(3, []byte("x")); err != nil {
+	if _, err := buf.Add(3, []byte("x")); err != nil {
 		t.Errorf("Add after ACK failed: %v", err)
 	}
 }
@@ -74,10 +74,10 @@ func TestSequenceBufferGetFromSeq(t *testing.T) {
 	buf := NewSequenceBuffer(1000)
 
 	// Add frames out of order
-	buf.Add(3, []byte("three"))
-	buf.Add(1, []byte("one"))
-	buf.Add(5, []byte("five"))
-	buf.Add(2, []byte("two"))
+	buf.Add(3, []byte("three"))  //nolint:errcheck
+	buf.Add(1, []byte("one"))    //nolint:errcheck
+	buf.Add(5, []byte("five"))   //nolint:errcheck
+	buf.Add(2, []byte("two"))    //nolint:errcheck
 
 	// Get all frames after seq 1
 	frames := buf.GetFromSeq(1)
