@@ -897,10 +897,15 @@ func clientSessionToStdout(ctx context.Context, session *ClientSession, logf log
 			}
 
 			// Send app-level ACK so the server can clear its send buffer.
-			// Non-fatal: if the connection died, the next ReadFrame will catch it.
-			if err := session.SendAck(); err != nil {
-				logf("[stdout] SendAck error (non-fatal): %v", err)
-			}
+			// Use a goroutine to avoid deadlock: if the QUIC flow control window
+			// fills up, the stdin sender goroutine holds the stream's write
+			// serialization lock; calling SendAck here (the reader goroutine) would
+			// block, stop draining the stream, and deadlock both directions.
+			go func() {
+				if err := session.SendAck(); err != nil {
+					logf("[stdout] SendAck error (non-fatal): %v", err)
+				}
+			}()
 
 		case *AckFrame:
 			// Handle application-level ACK from server.

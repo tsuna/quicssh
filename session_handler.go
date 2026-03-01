@@ -250,13 +250,21 @@ func (h *SessionStreamHandler) streamToSSHD(ctx context.Context, stream *quic.St
 			// Send ACK to client so it can clear its send buffer.
 			// Without this, the client's buffer fills up during large uploads
 			// (e.g., VS Code server tarball) and deadlocks.
+			//
+			// The ACK write must NOT block this goroutine. If the QUIC flow control
+			// window in the server→client direction fills up, sshdToStream holds the
+			// stream's write serialization lock waiting for it to open. If we tried to
+			// write an ACK here (also a stream write), we would block and stop reading
+			// from the stream, filling the client→server window too and deadlocking both
+			// directions. A goroutine decouples the ACK write from the read loop.
 			framesSinceAck++
 			now := time.Now()
 			if framesSinceAck >= ackBatchFrames || now.Sub(lastAckTime) >= ackBatchTimeout {
-				ack := &AckFrame{Seq: sess.LastRecvSeq()}
-				if err := ack.Encode(stream, nil); err != nil {
-					return fmt.Errorf("failed to send ACK: %w", err)
-				}
+				seq := sess.LastRecvSeq()
+				go func() {
+					ack := &AckFrame{Seq: seq}
+					ack.Encode(stream, nil) //nolint:errcheck // non-fatal; stream death detected by read/write loops
+				}()
 				framesSinceAck = 0
 				lastAckTime = now
 			}

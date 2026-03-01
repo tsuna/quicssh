@@ -419,7 +419,7 @@ func TestE2E_LargeUpload(t *testing.T) {
 				if isNew {
 					totalReceived.Add(int64(len(f.Payload)))
 				}
-				_ = clientSession.SendAck()
+				go clientSession.SendAck() //nolint:errcheck // goroutine avoids deadlock under flow control
 			case *AckFrame:
 				clientSession.HandleAck(f)
 			}
@@ -1145,7 +1145,7 @@ func TestE2E_TortureTest(t *testing.T) {
 
 						// Send app-level ACK so the server can clear its send buffer.
 						// Ignore errors: if the connection died, the next ReadFrame will catch it.
-						_ = clientSession.SendAck()
+						go clientSession.SendAck() //nolint:errcheck // goroutine avoids deadlock under flow control
 					} else if ackFrame, ok := frame.(*AckFrame); ok {
 						// Handle ACK from server so the client can clear its send buffer.
 						clientSession.HandleAck(ackFrame)

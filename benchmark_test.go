@@ -284,7 +284,7 @@ func runThroughputBenchmark(b *testing.B, cfg benchConfig) {
 							return
 						}
 						clientReceivedSeq.Add(1)
-						_ = clientSession.SendAck()
+						go clientSession.SendAck() //nolint:errcheck // goroutine avoids deadlock under flow control
 					case *AckFrame:
 						clientSession.HandleAck(f)
 					}
