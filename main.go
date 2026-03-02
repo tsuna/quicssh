@@ -65,6 +65,10 @@ func newQUICConfig(idleTimeout time.Duration, bufferSize int) *quic.Config {
 		InitialConnectionReceiveWindow: connWindow,
 		MaxConnectionReceiveWindow:     connWindow,
 		Allow0RTT:                      true, // Enable 0-RTT resumption for faster reconnects
+		// Use BBR congestion control for better performance with packet loss
+		Congestion: func() quic.SendAlgorithmWithDebugInfos {
+			return quic.NewBBRv1(&quic.Config{})
+		},
 	}
 }
 
