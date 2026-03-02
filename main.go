@@ -65,6 +65,9 @@ func newQUICConfig(idleTimeout time.Duration, bufferSize int) *quic.Config {
 		InitialConnectionReceiveWindow: connWindow,
 		MaxConnectionReceiveWindow:     connWindow,
 		Allow0RTT:                      true, // Enable 0-RTT resumption for faster reconnects
+		// Use smaller initial packet size for VPN compatibility (1400 MTU - 48 bytes for IPv6+UDP headers = 1352)
+		// Using 1280 to be conservative and match minimum IPv6 MTU
+		InitialPacketSize: 1280,
 		// Use BBR congestion control for better performance with packet loss
 		Congestion: func() quic.SendAlgorithmWithDebugInfos {
 			return quic.NewBBRv1(&quic.Config{})
