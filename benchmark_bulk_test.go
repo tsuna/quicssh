@@ -214,6 +214,8 @@ type delayQueue struct {
 	sendFunc func([]byte, net.Addr) error
 	done     chan struct{}
 	once     sync.Once
+	mu       sync.Mutex
+	closed   bool
 }
 
 func newDelayQueue(sendFunc func([]byte, net.Addr) error) *delayQueue {
@@ -237,9 +239,27 @@ func (dq *delayQueue) run() {
 	}
 }
 
+func (dq *delayQueue) send(pkt delayedPacket) bool {
+	dq.mu.Lock()
+	defer dq.mu.Unlock()
+	if dq.closed {
+		return false
+	}
+	select {
+	case dq.ch <- pkt:
+		return true
+	default:
+		// Queue full
+		return false
+	}
+}
+
 func (dq *delayQueue) close() {
 	dq.once.Do(func() {
+		dq.mu.Lock()
+		dq.closed = true
 		close(dq.ch)
+		dq.mu.Unlock()
 	})
 	<-dq.done
 }
@@ -275,37 +295,30 @@ func newLatencyPacketConnPair(bufferSize int, oneWayLatency time.Duration) (*lat
 
 	// Replace sendFuncs to enqueue with delay instead of delivering immediately.
 	conn1.sendFunc = func(data []byte, addr net.Addr) error {
-		if lc1.closed.Load() {
-			return net.ErrClosed
-		}
 		dataCopy := make([]byte, len(data))
 		copy(dataCopy, data)
-		select {
-		case lc1.queue.ch <- delayedPacket{data: dataCopy, addr: addr, deliverAt: time.Now().Add(oneWayLatency)}:
+		if lc1.queue.send(delayedPacket{data: dataCopy, addr: addr, deliverAt: time.Now().Add(oneWayLatency)}) {
 			return nil
-		default:
-			return net.ErrClosed // Queue full, treat as drop
 		}
+		return net.ErrClosed
 	}
 
 	conn2.sendFunc = func(data []byte, addr net.Addr) error {
-		if lc2.closed.Load() {
-			return net.ErrClosed
-		}
 		dataCopy := make([]byte, len(data))
 		copy(dataCopy, data)
-		select {
-		case lc2.queue.ch <- delayedPacket{data: dataCopy, addr: addr, deliverAt: time.Now().Add(oneWayLatency)}:
+		if lc2.queue.send(delayedPacket{data: dataCopy, addr: addr, deliverAt: time.Now().Add(oneWayLatency)}) {
 			return nil
-		default:
-			return net.ErrClosed
 		}
+		return net.ErrClosed
 	}
 
 	return lc1, lc2
 }
 
 func (c *latencyPacketConn) Close() error {
+	// Set closed flag first, before closing the channel.
+	// This ensures that any new sends will see the closed flag
+	// and return immediately without attempting to send to the channel.
 	c.closed.Store(true)
 	c.queue.close()
 	return c.FakePacketConn.Close()
