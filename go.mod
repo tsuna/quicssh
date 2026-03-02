@@ -18,4 +18,4 @@ require (
 	golang.org/x/crypto v0.46.0 // indirect
 )
 
-replace github.com/quic-go/quic-go => github.com/tsuna/quic-go v0.0.0-20260302134839-72db6e93d72e
+replace github.com/quic-go/quic-go => github.com/tsuna/quic-go v0.0.0-20260302230228-b948471856a8
