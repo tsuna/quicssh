@@ -20,10 +20,22 @@ type patchSpec struct {
 }
 
 var patchSpecs = []patchSpec{
+	// Patterns below match remote-ssh 0.124.0. The extension code is the same
+	// as before, but the minifier no longer wraps arrow functions in redundant
+	// parentheses, and the bundle is now duplicated into resolver.js (not
+	// referenced by package.json, but patched anyway in case it's loaded).
 	{
 		filename:     "extension.js",
-		searchPrefix: `Promise.race([t.cnx.call("ping",{}).then((()=>!0)),new Promise((e=>setTimeout((()=>e(!1)),`,
-		searchSuffix: `)))]))return`,
+		searchPrefix: `Promise.race([t.cnx.call("ping",{}).then(()=>!0),new Promise(e=>setTimeout(()=>e(!1),`,
+		searchSuffix: `))]))return`,
+		oldValue:     "3e3",
+		newValue:     "9e7",
+		description:  "ExecServerCache ping timeout (3s -> 25h)",
+	},
+	{
+		filename:     "resolver.js",
+		searchPrefix: `Promise.race([t.cnx.call("ping",{}).then(()=>!0),new Promise(e=>setTimeout(()=>e(!1),`,
+		searchSuffix: `))]))return`,
 		oldValue:     "3e3",
 		newValue:     "9e7",
 		description:  "ExecServerCache ping timeout (3s -> 25h)",
@@ -37,8 +49,16 @@ var patchSpecs = []patchSpec{
 		description:  "Health check ignores EPIPE during QUIC reconnection",
 	},
 	{
+		filename:     "resolver.js",
+		searchPrefix: `return t.debug("Server delay-shutdown request failed: "+e.message),`,
+		searchSuffix: `}}`,
+		oldValue:     "!1",
+		newValue:     "!0",
+		description:  "Health check ignores EPIPE during QUIC reconnection",
+	},
+	{
 		filename:     "localServer.js",
-		searchPrefix: `this.shutdownTimer=setTimeout((()=>{this.dispose(),S(),f("Timed out"),process.exit(0)}),`,
+		searchPrefix: `this.shutdownTimer=setTimeout(()=>{this.dispose(),S(),f("Timed out"),process.exit(0)},`,
 		searchSuffix: `)}killRemote`,
 		oldValue:     "5e3",
 		newValue:     "9e7",
