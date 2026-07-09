@@ -17,6 +17,7 @@ type patchSpec struct {
 	oldValue     string // the original value to replace
 	newValue     string // the replacement value
 	description  string // human-readable description
+	optional     bool   // if true, skip silently when the pattern is not found
 }
 
 var patchSpecs = []patchSpec{
@@ -41,20 +42,78 @@ var patchSpecs = []patchSpec{
 		description:  "ExecServerCache ping timeout (3s -> 25h)",
 	},
 	{
+		filename:    "extension.js",
+		oldValue:    `async function E(e,t){try{const n=await(0,g.httpGet)(void 0,{socketPath:e,path:"/delay-shutdown"},t);return"OK"===n||t.debug("Got unexpected result from running connection server: "+n),!0}catch(e){return t.debug("Server delay-shutdown request failed: "+e.message),!1}}`,
+		newValue:    `async function E(e,t){return!0}`,
+		description: "Disable delay-shutdown keepalive HTTP requests",
+		optional:    true,
+	},
+	{
+		filename:    "extension.js",
+		oldValue:    `async function E(e,t){try{const n=await(0,g.httpGet)(void 0,{socketPath:e,path:"/delay-shutdown"},t);return"OK"===n||t.debug("Got unexpected result from running connection server: "+n),!0}catch(e){return t.debug("Server delay-shutdown request failed: "+e.message),!0}}`,
+		newValue:    `async function E(e,t){return!0}`,
+		description: "Disable delay-shutdown keepalive HTTP requests (from prior partial patch)",
+	},
+	{
+		filename:    "resolver.js",
+		oldValue:    `async function _(e,t){try{const n=await(0,g.httpGet)(void 0,{socketPath:e,path:"/delay-shutdown"},t);return"OK"===n||t.debug("Got unexpected result from running connection server: "+n),!0}catch(e){return t.debug("Server delay-shutdown request failed: "+e.message),!1}}`,
+		newValue:    `async function _(e,t){return!0}`,
+		description: "Disable delay-shutdown keepalive HTTP requests",
+		optional:    true,
+	},
+	{
+		filename:    "resolver.js",
+		oldValue:    `async function _(e,t){try{const n=await(0,g.httpGet)(void 0,{socketPath:e,path:"/delay-shutdown"},t);return"OK"===n||t.debug("Got unexpected result from running connection server: "+n),!0}catch(e){return t.debug("Server delay-shutdown request failed: "+e.message),!0}}`,
+		newValue:    `async function _(e,t){return!0}`,
+		description: "Disable delay-shutdown keepalive HTTP requests (from prior partial patch)",
+	},
+	{
 		filename:     "extension.js",
-		searchPrefix: `return t.debug("Server delay-shutdown request failed: "+e.message),`,
-		searchSuffix: `}}`,
-		oldValue:     "!1",
-		newValue:     "!0",
-		description:  "Health check ignores EPIPE during QUIC reconnection",
+		searchPrefix: `0===this.connectionCount&&this.delayShutdown(`,
+		searchSuffix: `)}static readArgsFromEnvironment`,
+		oldValue:     "3e4",
+		newValue:     "9e7",
+		description:  "TunnelProxyServer idle shutdown (30s -> 25h)",
+	},
+	{
+		filename:     "extension.js",
+		searchPrefix: `this.startSavingRunningInfo(),this.delayShutdown(`,
+		searchSuffix: `)}incrementConnectionCount`,
+		oldValue:     "9e4",
+		newValue:     "9e7",
+		description:  "TunnelProxyServer startup shutdown (90s -> 25h)",
+	},
+	{
+		filename:     "extension.js",
+		searchPrefix: `delayShutdown(e=`,
+		searchSuffix: `){this.shutdownTimer&&clearTimeout`,
+		oldValue:     "3e4",
+		newValue:     "9e7",
+		description:  "TunnelProxyServer default shutdown (30s -> 25h)",
 	},
 	{
 		filename:     "resolver.js",
-		searchPrefix: `return t.debug("Server delay-shutdown request failed: "+e.message),`,
-		searchSuffix: `}}`,
-		oldValue:     "!1",
-		newValue:     "!0",
-		description:  "Health check ignores EPIPE during QUIC reconnection",
+		searchPrefix: `0===this.connectionCount&&this.delayShutdown(`,
+		searchSuffix: `)}static readArgsFromEnvironment`,
+		oldValue:     "3e4",
+		newValue:     "9e7",
+		description:  "TunnelProxyServer idle shutdown (30s -> 25h)",
+	},
+	{
+		filename:     "resolver.js",
+		searchPrefix: `this.startSavingRunningInfo(),this.delayShutdown(`,
+		searchSuffix: `)}incrementConnectionCount`,
+		oldValue:     "9e4",
+		newValue:     "9e7",
+		description:  "TunnelProxyServer startup shutdown (90s -> 25h)",
+	},
+	{
+		filename:     "resolver.js",
+		searchPrefix: `delayShutdown(e=`,
+		searchSuffix: `){this.shutdownTimer&&clearTimeout`,
+		oldValue:     "3e4",
+		newValue:     "9e7",
+		description:  "TunnelProxyServer default shutdown (30s -> 25h)",
 	},
 	{
 		filename:     "localServer.js",
@@ -81,6 +140,16 @@ func checkPatchStatus(filePath string, spec patchSpec) patchStatus {
 	content, err := os.ReadFile(filePath)
 	if err != nil {
 		return patchStatusError
+	}
+
+	if spec.searchPrefix == "" && spec.searchSuffix == "" {
+		if bytes.Contains(content, []byte(spec.newValue)) {
+			return patchStatusPatched
+		}
+		if bytes.Contains(content, []byte(spec.oldValue)) {
+			return patchStatusUnpatched
+		}
+		return patchStatusUnknown
 	}
 
 	oldPattern := spec.searchPrefix + spec.oldValue + spec.searchSuffix
@@ -185,6 +254,10 @@ func applyPatch(filePath string, spec patchSpec) error {
 		return fmt.Errorf("failed to read file: %w", err)
 	}
 
+	if spec.searchPrefix == "" && spec.searchSuffix == "" {
+		return applyFullReplacePatch(filePath, content, spec)
+	}
+
 	// Build the search pattern
 	oldPattern := spec.searchPrefix + spec.oldValue + spec.searchSuffix
 	newPattern := spec.searchPrefix + spec.newValue + spec.searchSuffix
@@ -207,6 +280,26 @@ func applyPatch(filePath string, spec patchSpec) error {
 			spec.oldValue, spec.newValue)
 	}
 
+	return writePatchedContent(filePath, content, oldPattern, newPattern, spec)
+}
+
+func applyFullReplacePatch(filePath string, content []byte, spec patchSpec) error {
+	if bytes.Contains(content, []byte(spec.newValue)) {
+		fmt.Printf("  %s: already patched (%s)\n", spec.filename, spec.description)
+		return nil
+	}
+
+	if !bytes.Contains(content, []byte(spec.oldValue)) {
+		if spec.optional {
+			return nil
+		}
+		return fmt.Errorf("pattern not found - file may have been updated or has unexpected format")
+	}
+
+	return writePatchedContent(filePath, content, spec.oldValue, spec.newValue, spec)
+}
+
+func writePatchedContent(filePath string, content []byte, oldPattern, newPattern string, spec patchSpec) error {
 	// Create backup if it doesn't exist
 	backupPath := filePath + ".orig"
 	if _, err := os.Stat(backupPath); os.IsNotExist(err) {
