@@ -20,13 +20,18 @@ type patchSpec struct {
 	optional     bool   // if true, skip silently when the pattern is not found
 }
 
+const (
+	extensionJS = "extension.js"
+	resolverJS  = "resolver.js"
+)
+
 var patchSpecs = []patchSpec{
 	// Patterns below match remote-ssh 0.124.0. The extension code is the same
 	// as before, but the minifier no longer wraps arrow functions in redundant
 	// parentheses, and the bundle is now duplicated into resolver.js (not
 	// referenced by package.json, but patched anyway in case it's loaded).
 	{
-		filename:     "extension.js",
+		filename:     extensionJS,
 		searchPrefix: `Promise.race([t.cnx.call("ping",{}).then(()=>!0),new Promise(e=>setTimeout(()=>e(!1),`,
 		searchSuffix: `))]))return`,
 		oldValue:     "3e3",
@@ -34,7 +39,7 @@ var patchSpecs = []patchSpec{
 		description:  "ExecServerCache ping timeout (3s -> 25h)",
 	},
 	{
-		filename:     "resolver.js",
+		filename:     resolverJS,
 		searchPrefix: `Promise.race([t.cnx.call("ping",{}).then(()=>!0),new Promise(e=>setTimeout(()=>e(!1),`,
 		searchSuffix: `))]))return`,
 		oldValue:     "3e3",
@@ -42,33 +47,33 @@ var patchSpecs = []patchSpec{
 		description:  "ExecServerCache ping timeout (3s -> 25h)",
 	},
 	{
-		filename:    "extension.js",
+		filename:    extensionJS,
 		oldValue:    `async function E(e,t){try{const n=await(0,g.httpGet)(void 0,{socketPath:e,path:"/delay-shutdown"},t);return"OK"===n||t.debug("Got unexpected result from running connection server: "+n),!0}catch(e){return t.debug("Server delay-shutdown request failed: "+e.message),!1}}`,
 		newValue:    `async function E(e,t){return!0}`,
 		description: "Disable delay-shutdown keepalive HTTP requests",
 		optional:    true,
 	},
 	{
-		filename:    "extension.js",
+		filename:    extensionJS,
 		oldValue:    `async function E(e,t){try{const n=await(0,g.httpGet)(void 0,{socketPath:e,path:"/delay-shutdown"},t);return"OK"===n||t.debug("Got unexpected result from running connection server: "+n),!0}catch(e){return t.debug("Server delay-shutdown request failed: "+e.message),!0}}`,
 		newValue:    `async function E(e,t){return!0}`,
 		description: "Disable delay-shutdown keepalive HTTP requests (from prior partial patch)",
 	},
 	{
-		filename:    "resolver.js",
+		filename:    resolverJS,
 		oldValue:    `async function _(e,t){try{const n=await(0,g.httpGet)(void 0,{socketPath:e,path:"/delay-shutdown"},t);return"OK"===n||t.debug("Got unexpected result from running connection server: "+n),!0}catch(e){return t.debug("Server delay-shutdown request failed: "+e.message),!1}}`,
 		newValue:    `async function _(e,t){return!0}`,
 		description: "Disable delay-shutdown keepalive HTTP requests",
 		optional:    true,
 	},
 	{
-		filename:    "resolver.js",
+		filename:    resolverJS,
 		oldValue:    `async function _(e,t){try{const n=await(0,g.httpGet)(void 0,{socketPath:e,path:"/delay-shutdown"},t);return"OK"===n||t.debug("Got unexpected result from running connection server: "+n),!0}catch(e){return t.debug("Server delay-shutdown request failed: "+e.message),!0}}`,
 		newValue:    `async function _(e,t){return!0}`,
 		description: "Disable delay-shutdown keepalive HTTP requests (from prior partial patch)",
 	},
 	{
-		filename:     "extension.js",
+		filename:     extensionJS,
 		searchPrefix: `0===this.connectionCount&&this.delayShutdown(`,
 		searchSuffix: `)}static readArgsFromEnvironment`,
 		oldValue:     "3e4",
@@ -76,7 +81,7 @@ var patchSpecs = []patchSpec{
 		description:  "TunnelProxyServer idle shutdown (30s -> 25h)",
 	},
 	{
-		filename:     "extension.js",
+		filename:     extensionJS,
 		searchPrefix: `this.startSavingRunningInfo(),this.delayShutdown(`,
 		searchSuffix: `)}incrementConnectionCount`,
 		oldValue:     "9e4",
@@ -84,7 +89,7 @@ var patchSpecs = []patchSpec{
 		description:  "TunnelProxyServer startup shutdown (90s -> 25h)",
 	},
 	{
-		filename:     "extension.js",
+		filename:     extensionJS,
 		searchPrefix: `delayShutdown(e=`,
 		searchSuffix: `){this.shutdownTimer&&clearTimeout`,
 		oldValue:     "3e4",
@@ -92,7 +97,7 @@ var patchSpecs = []patchSpec{
 		description:  "TunnelProxyServer default shutdown (30s -> 25h)",
 	},
 	{
-		filename:     "resolver.js",
+		filename:     resolverJS,
 		searchPrefix: `0===this.connectionCount&&this.delayShutdown(`,
 		searchSuffix: `)}static readArgsFromEnvironment`,
 		oldValue:     "3e4",
@@ -100,7 +105,7 @@ var patchSpecs = []patchSpec{
 		description:  "TunnelProxyServer idle shutdown (30s -> 25h)",
 	},
 	{
-		filename:     "resolver.js",
+		filename:     resolverJS,
 		searchPrefix: `this.startSavingRunningInfo(),this.delayShutdown(`,
 		searchSuffix: `)}incrementConnectionCount`,
 		oldValue:     "9e4",
@@ -108,7 +113,7 @@ var patchSpecs = []patchSpec{
 		description:  "TunnelProxyServer startup shutdown (90s -> 25h)",
 	},
 	{
-		filename:     "resolver.js",
+		filename:     resolverJS,
 		searchPrefix: `delayShutdown(e=`,
 		searchSuffix: `){this.shutdownTimer&&clearTimeout`,
 		oldValue:     "3e4",
