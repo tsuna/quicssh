@@ -21,7 +21,7 @@ build_deb() {
     docker run --rm \
         -v "$PROJECT_ROOT:/build" \
         -w /build \
-        golang:1.25-trixie \
+        golang:1.27-trixie \
         bash -c "
             set -e
             apt-get update

@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"sync"
 	"syscall"
 	"time"
@@ -928,7 +929,7 @@ func clientSessionToStdout(ctx context.Context, session *ClientSession, logf log
 // Uses io.Copy which automatically uses splice() on Linux when copying
 // between the TCP socket and stdin/stdout pipes.
 func tcpPassthrough(_ context.Context, host string, port int) error {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		return fmt.Errorf("failed to connect to %s: %w", addr, err)

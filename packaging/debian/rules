@@ -1,7 +1,7 @@
 #!/usr/bin/make -f
 
-# Build using system Go (requires Go 1.25+)
-# Use scripts/build-deb-docker.sh to build in a Docker container with Go 1.25
+# Build using system Go (requires Go 1.27+)
+# Use scripts/build-deb-docker.sh to build in a Docker container with Go 1.27
 
 export DH_GOLANG_EXCLUDES := vendor
 

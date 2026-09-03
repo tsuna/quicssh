@@ -3,7 +3,7 @@ Section: net
 Priority: optional
 Maintainer: Benoît Sigoure <tsuna@lrde.epita.fr>
 Build-Depends: debhelper-compat (= 13),
-               golang-go (>= 2:1.25~) | golang-1.25-go
+               golang-go (>= 2:1.27~) | golang-1.27-go
 Standards-Version: 4.6.2
 Homepage: https://github.com/tsuna/quicssh
 Vcs-Git: https://github.com/tsuna/quicssh.git
