@@ -3,7 +3,7 @@ module github.com/tsuna/quicssh
 go 1.27.0
 
 require (
-	github.com/quic-go/quic-go v0.61.0
+	github.com/quic-go/quic-go v0.62.0
 	github.com/urfave/cli/v2 v2.27.7
 	github.com/vishvananda/netlink v1.3.1
 	golang.org/x/net v0.59.0
@@ -18,4 +18,4 @@ require (
 	golang.org/x/crypto v0.57.0 // indirect
 )
 
-replace github.com/quic-go/quic-go => github.com/tsuna/quic-go v0.0.0-20260818123352-b57046e0377c
+replace github.com/quic-go/quic-go => github.com/tsuna/quic-go v0.0.0-20260921153030-5a28e421f87a
