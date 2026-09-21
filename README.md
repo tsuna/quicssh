@@ -51,15 +51,36 @@ SSH Connection proxified with QUIC
 
 ## Install
 
-```bash
-# Install latest version
-go install github.com/tsuna/quicssh@latest
+Download a pre-built binary from [releases](https://github.com/tsuna/quicssh/releases), or build from source:
 
-# Install specific version
-go install github.com/tsuna/quicssh@v1.1.0
+```bash
+git clone https://github.com/tsuna/quicssh.git
+cd quicssh
+go build
 ```
 
-Or download pre-built binaries from [releases](https://github.com/tsuna/quicssh/releases).
+### Why `go install` does not work
+
+`go install github.com/tsuna/quicssh@latest` **does not work** and will not install
+a current version.
+
+quicssh depends on a [fork of quic-go](https://github.com/tsuna/quic-go) that adds
+BBRv1 congestion control, which is pulled in through a `replace` directive in
+`go.mod`. The `go install pkg@version` command refuses any module whose `go.mod`
+contains `replace` directives:
+
+```
+The go.mod file for the module providing named packages contains one or
+more replace directives. It must not contain directives that would cause
+it to be interpreted differently than if it were the main module.
+```
+
+This is a restriction of the `go` command, not something quicssh can work around
+while it depends on a forked transport. Note that `go install ...@latest` may
+still appear to succeed by silently falling back to the last release that
+predates the fork (v1.2.0), which lacks the session layer and the
+`patch-vscode-remote-ssh` command entirely. Use a release binary or build from
+source instead.
 
 ## Usage
 
