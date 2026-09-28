@@ -117,24 +117,34 @@ func main() {
 				Action: client,
 			},
 			{
-				Name:  "patch-vscode-remote-ssh",
-				Usage: "Patch VS Code Remote-SSH extension to increase timeout values for use with quicssh",
-				Description: `This command patches the VS Code Remote-SSH extension to increase two timeout
-values that cause connections to fail despite quicssh keeping them alive:
+				Name:    "patch-vscode",
+				Aliases: []string{"patch-vscode-remote-ssh"},
+				Usage:   "Patch the VS Code Remote-SSH and Dev Containers extensions for use with quicssh",
+				Description: `This command patches the VS Code remote extensions installed on this machine.
+
+Remote-SSH: increases timeout values that cause connections to fail despite
+quicssh keeping them alive:
 
   1. ExecServerCache ping timeout (3 seconds -> 25 hours)
   2. Local server dead man's switch (5 seconds -> 25 hours)
 
-The original files are backed up with a .orig extension so you can easily revert.
-Use 'unpatch-vscode-remote-ssh' to restore the original files.
+Dev Containers: makes the file that records the VS Code Server port inside a
+container (~/.vscode-server/data/Machine/.devport-<commit>) container-specific,
+so containers that bind-mount the same ~/.vscode-server no longer clobber each
+other's port and fail with "WebSocket close with status code 1006" on reload.
 
-Note: You will need to re-run this command after VS Code updates the extension.`,
-				Action: patchVSCodeRemoteSSH,
+Extensions that are not installed are skipped. The original files are backed up
+with a .orig extension so you can easily revert. Use 'unpatch-vscode' to
+restore the original files.
+
+Note: You will need to re-run this command after VS Code updates an extension.`,
+				Action: patchVSCode,
 			},
 			{
-				Name:   "unpatch-vscode-remote-ssh",
-				Usage:  "Restore original VS Code Remote-SSH extension files from backups",
-				Action: unpatchVSCodeRemoteSSH,
+				Name:    "unpatch-vscode",
+				Aliases: []string{"unpatch-vscode-remote-ssh"},
+				Usage:   "Restore original VS Code extension files from backups",
+				Action:  unpatchVSCode,
 			},
 		},
 	}

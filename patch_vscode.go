@@ -130,6 +130,74 @@ var patchSpecs = []patchSpec{
 	},
 }
 
+// devContainersPatchSpecs match the Dev Containers extension (0.469.0).
+//
+// The extension records the port of the VS Code Server it starts inside a
+// container in ~/.vscode-server/data/Machine/.devport-<commit>. When several
+// containers bind-mount the same ~/.vscode-server (typical for "attach to
+// running container" setups that mount the user's home), they all share that
+// file, so whichever server started last overwrites the port. On the next
+// reload of a window attached to another container, the extension finds its
+// server "already running", reads the other container's port, gets
+// ECONNREFUSED on every forwarded connection, and the window fails with
+// "WebSocket close with status code 1006" until the server is killed.
+//
+// The patch appends the container's mount namespace id (already collected by
+// the extension in the same function, unique per live container and stable for
+// its lifetime) to the file name, keeping it in the same directory so no
+// assumption is made about /tmp or any other location.
+var devContainersPatchSpecs = []patchSpec{
+	{
+		filename:     extensionJS,
+		searchPrefix: "O=Ne.posix.join(Mi(t),`.devport-${b}${k===\"stable\"?\"\":`-${k}`}${e.web?\"-web\":\"\"}",
+		searchSuffix: "`);if(w.length)",
+		oldValue:     "${t.legacy?\"-legacy\":\"\"}",
+		newValue:     "${t.legacy?\"-legacy\":\"\"}${m?`-${m.replace(/\\D/g,\"\")}`:\"\"}",
+		description:  "Make .devport file name container-specific (append mount namespace id)",
+	},
+}
+
+// extensionTarget describes a VS Code extension whose bundled JavaScript
+// quicssh knows how to patch.
+type extensionTarget struct {
+	name   string      // human-readable name
+	glob   string      // directory glob under ~/.vscode/extensions
+	subdir string      // directory holding the bundled JavaScript, relative to the extension root
+	specs  []patchSpec // patches to apply
+}
+
+var extensionTargets = []extensionTarget{
+	{
+		name: "Remote-SSH",
+		// Use a specific pattern to avoid matching remote-ssh-edit-* extensions
+		glob:   "ms-vscode-remote.remote-ssh-0.*",
+		subdir: "out",
+		specs:  patchSpecs,
+	},
+	{
+		name:   "Dev Containers",
+		glob:   "ms-vscode-remote.remote-containers-0.*",
+		subdir: filepath.Join("dist", "extension"),
+		specs:  devContainersPatchSpecs,
+	},
+}
+
+func (t extensionTarget) findExtensionDirs() ([]string, error) {
+	homeDir, err := os.UserHomeDir()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get home directory: %w", err)
+	}
+	extensionsDir := filepath.Join(homeDir, ".vscode", "extensions")
+	matches, err := filepath.Glob(filepath.Join(extensionsDir, t.glob))
+	if err != nil {
+		return nil, fmt.Errorf("failed to search for extension: %w", err)
+	}
+	if len(matches) == 0 {
+		return nil, fmt.Errorf("VS Code %s extension not found in %s", t.name, extensionsDir)
+	}
+	return matches, nil
+}
+
 // patchStatus represents the patch state of a file
 type patchStatus int
 
@@ -171,37 +239,31 @@ func checkPatchStatus(filePath string, spec patchSpec) patchStatus {
 	return patchStatusUnknown
 }
 
-// findUnpatchedVSCodeExtensions returns paths to VS Code Remote-SSH extensions
+// findUnpatchedVSCodeExtensions returns paths to installed VS Code extensions
 // that have at least one file needing patching.
 func findUnpatchedVSCodeExtensions() []string {
-	homeDir, err := os.UserHomeDir()
-	if err != nil {
-		return nil
-	}
-
-	extensionsDir := filepath.Join(homeDir, ".vscode", "extensions")
-	matches, err := filepath.Glob(filepath.Join(extensionsDir, "ms-vscode-remote.remote-ssh-0.*"))
-	if err != nil || len(matches) == 0 {
-		return nil
-	}
-
 	var unpatched []string
-	for _, extDir := range matches {
-		outDir := filepath.Join(extDir, "out")
-		for _, spec := range patchSpecs {
-			filePath := filepath.Join(outDir, spec.filename)
-			if checkPatchStatus(filePath, spec) == patchStatusUnpatched {
-				unpatched = append(unpatched, extDir)
-				break // Only need to find one unpatched file per extension
+	for _, target := range extensionTargets {
+		extDirs, err := target.findExtensionDirs()
+		if err != nil {
+			continue
+		}
+		for _, extDir := range extDirs {
+			bundleDir := filepath.Join(extDir, target.subdir)
+			for _, spec := range target.specs {
+				filePath := filepath.Join(bundleDir, spec.filename)
+				if checkPatchStatus(filePath, spec) == patchStatusUnpatched {
+					unpatched = append(unpatched, extDir)
+					break // Only need to find one unpatched file per extension
+				}
 			}
 		}
 	}
-
 	return unpatched
 }
 
 // warnUnpatchedVSCodeExtensions prints a warning to stderr if any unpatched
-// VS Code Remote-SSH extensions are found.
+// VS Code extensions are found.
 func warnUnpatchedVSCodeExtensions() {
 	unpatched := findUnpatchedVSCodeExtensions()
 	if len(unpatched) == 0 {
@@ -212,43 +274,78 @@ func warnUnpatchedVSCodeExtensions() {
 	for _, extPath := range unpatched {
 		fmt.Fprintf(os.Stderr, "  - %s\n", extPath)
 	}
-	fmt.Fprintf(os.Stderr, "Run `%s patch-vscode-remote-ssh` to patch and get the full benefits of quicssh with VS Code.\n", os.Args[0])
+	fmt.Fprintf(os.Stderr, "Run `%s patch-vscode` to patch and get the full benefits of quicssh with VS Code.\n", os.Args[0])
 }
 
-func patchVSCodeRemoteSSH(_ *cli.Context) error {
-	homeDir, err := os.UserHomeDir()
+// patchVSCode applies the patches for every known VS Code extension that is
+// installed. It only fails if no known extension is installed at all.
+func patchVSCode(_ *cli.Context) error {
+	found := false
+	for _, target := range extensionTargets {
+		if _, err := target.findExtensionDirs(); err != nil {
+			fmt.Printf("Skipping VS Code %s extension: %v\n", target.name, err)
+			continue
+		}
+		found = true
+		if err := patchExtension(target); err != nil {
+			return err
+		}
+	}
+	if !found {
+		return fmt.Errorf("no known VS Code extension found")
+	}
+	fmt.Println("\nPatching complete! Please restart VS Code for changes to take effect.")
+	fmt.Println("Original files have been backed up with .orig extension.")
+	return nil
+}
+
+// unpatchVSCode restores the original files of every known VS Code extension
+// that is installed.
+func unpatchVSCode(_ *cli.Context) error {
+	found := false
+	totalRestored := 0
+	for _, target := range extensionTargets {
+		if _, err := target.findExtensionDirs(); err != nil {
+			fmt.Printf("Skipping VS Code %s extension: %v\n", target.name, err)
+			continue
+		}
+		found = true
+		n, err := unpatchExtension(target)
+		if err != nil {
+			return err
+		}
+		totalRestored += n
+	}
+	if !found {
+		return fmt.Errorf("no known VS Code extension found")
+	}
+	if totalRestored > 0 {
+		fmt.Println("\nRestore complete! Please restart VS Code for changes to take effect.")
+	} else {
+		fmt.Println("\nNo backups found - nothing to restore.")
+	}
+	return nil
+}
+
+// patchExtension applies all of the target's patches to every installed
+// version of the extension.
+func patchExtension(target extensionTarget) error {
+	extDirs, err := target.findExtensionDirs()
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
+		return err
 	}
 
-	// Find the VS Code Remote-SSH extension directory
-	// Use a specific pattern to avoid matching remote-ssh-edit-* extensions
-	extensionsDir := filepath.Join(homeDir, ".vscode", "extensions")
-	matches, err := filepath.Glob(filepath.Join(extensionsDir, "ms-vscode-remote.remote-ssh-0.*"))
-	if err != nil {
-		return fmt.Errorf("failed to search for extension: %w", err)
-	}
+	for _, extDir := range extDirs {
+		bundleDir := filepath.Join(extDir, target.subdir)
+		fmt.Printf("Patching VS Code %s extension: %s\n", target.name, filepath.Base(extDir))
 
-	if len(matches) == 0 {
-		return fmt.Errorf("VS Code Remote-SSH extension not found in %s", extensionsDir)
-	}
-
-	// Patch all versions found
-	for _, extDir := range matches {
-		outDir := filepath.Join(extDir, "out")
-		fmt.Printf("Patching VS Code Remote-SSH extension: %s\n", filepath.Base(extDir))
-
-		// Apply each patch
-		for _, spec := range patchSpecs {
-			filePath := filepath.Join(outDir, spec.filename)
+		for _, spec := range target.specs {
+			filePath := filepath.Join(bundleDir, spec.filename)
 			if err := applyPatch(filePath, spec); err != nil {
 				return fmt.Errorf("failed to patch %s in %s: %w", spec.filename, filepath.Base(extDir), err)
 			}
 		}
 	}
-
-	fmt.Println("\nPatching complete! Please restart VS Code for changes to take effect.")
-	fmt.Println("Original files have been backed up with .orig extension.")
 	return nil
 }
 
@@ -336,47 +433,42 @@ func writePatchedContent(filePath string, content []byte, oldPattern, newPattern
 	return nil
 }
 
-// unpatchVSCodeRemoteSSH restores the original files from backups
-func unpatchVSCodeRemoteSSH(_ *cli.Context) error {
-	homeDir, err := os.UserHomeDir()
+// unpatchExtension restores the original files from backups and returns the
+// number of files restored.
+func unpatchExtension(target extensionTarget) (int, error) {
+	extDirs, err := target.findExtensionDirs()
 	if err != nil {
-		return fmt.Errorf("failed to get home directory: %w", err)
-	}
-
-	// Use a specific pattern to avoid matching remote-ssh-edit-* extensions
-	extensionsDir := filepath.Join(homeDir, ".vscode", "extensions")
-	matches, err := filepath.Glob(filepath.Join(extensionsDir, "ms-vscode-remote.remote-ssh-0.*"))
-	if err != nil {
-		return fmt.Errorf("failed to search for extension: %w", err)
-	}
-
-	if len(matches) == 0 {
-		return fmt.Errorf("VS Code Remote-SSH extension not found in %s", extensionsDir)
+		return 0, err
 	}
 
 	totalRestored := 0
-	for _, extDir := range matches {
-		outDir := filepath.Join(extDir, "out")
-		fmt.Printf("Restoring VS Code Remote-SSH extension: %s\n", filepath.Base(extDir))
+	for _, extDir := range extDirs {
+		bundleDir := filepath.Join(extDir, target.subdir)
+		fmt.Printf("Restoring VS Code %s extension: %s\n", target.name, filepath.Base(extDir))
 
-		for _, spec := range patchSpecs {
-			filePath := filepath.Join(outDir, spec.filename)
+		restored := map[string]bool{}
+		for _, spec := range target.specs {
+			if restored[spec.filename] {
+				continue
+			}
+			filePath := filepath.Join(bundleDir, spec.filename)
 			backupPath := filePath + ".orig"
 
 			if _, err := os.Stat(backupPath); os.IsNotExist(err) {
 				fmt.Printf("  %s: no backup found, skipping\n", spec.filename)
+				restored[spec.filename] = true
 				continue
 			}
 
 			// Read backup
 			backup, err := os.ReadFile(backupPath)
 			if err != nil {
-				return fmt.Errorf("failed to read backup %s: %w", backupPath, err)
+				return totalRestored, fmt.Errorf("failed to read backup %s: %w", backupPath, err)
 			}
 
 			// Restore
 			if err := os.WriteFile(filePath, backup, 0644); err != nil {
-				return fmt.Errorf("failed to restore %s: %w", spec.filename, err)
+				return totalRestored, fmt.Errorf("failed to restore %s: %w", spec.filename, err)
 			}
 
 			// Remove backup
@@ -385,14 +477,10 @@ func unpatchVSCodeRemoteSSH(_ *cli.Context) error {
 			}
 
 			fmt.Printf("  %s: restored from backup\n", spec.filename)
+			restored[spec.filename] = true
 			totalRestored++
 		}
 	}
 
-	if totalRestored > 0 {
-		fmt.Println("\nRestore complete! Please restart VS Code for changes to take effect.")
-	} else {
-		fmt.Println("\nNo backups found - nothing to restore.")
-	}
-	return nil
+	return totalRestored, nil
 }

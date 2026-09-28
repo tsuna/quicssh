@@ -79,7 +79,7 @@ This is a restriction of the `go` command, not something quicssh can work around
 while it depends on a forked transport. Note that `go install ...@latest` may
 still appear to succeed by silently falling back to the last release that
 predates the fork (v1.2.0), which lacks the session layer and the
-`patch-vscode-remote-ssh` command entirely. Use a release binary or build from
+`patch-vscode` command entirely. Use a release binary or build from
 source instead.
 
 ## Usage
@@ -293,21 +293,49 @@ When your laptop sleeps and wakes up, the network stack needs time to recover. E
 
 ### The Solution
 
-Run the `patch-vscode-remote-ssh` command to increase these timeouts to 25 hours:
+Run the `patch-vscode` command to increase these timeouts to 25 hours:
 
 ```bash
-quicssh patch-vscode-remote-ssh
+quicssh patch-vscode
 ```
 
-This patches the VS Code Remote-SSH extension files in place, backing up the originals with a `.orig` extension. After patching, restart VS Code for the changes to take effect.
+This patches the VS Code Remote-SSH extension files in place, backing up the originals with a `.orig` extension. After patching, restart VS Code for the changes to take effect. The same command also patches the Dev Containers extension if it is installed (see below); extensions that are not installed are skipped.
 
 To restore the original files:
 
 ```bash
-quicssh unpatch-vscode-remote-ssh
+quicssh unpatch-vscode
 ```
 
-> **Note**: You will need to re-run `patch-vscode-remote-ssh` after VS Code updates the Remote-SSH extension.
+> **Note**: You will need to re-run `patch-vscode` after VS Code updates an extension. The older `patch-vscode-remote-ssh` and `unpatch-vscode-remote-ssh` command names still work as aliases.
+
+### Dev Containers: server port clobbered between containers
+
+This one is unrelated to quicssh but bites the same "reload the window after a
+long disconnect" workflow, so quicssh ships a patch for it too.
+
+The [Dev Containers extension](https://code.visualstudio.com/docs/devcontainers/containers)
+records the port of the VS Code Server it starts inside a container in
+`~/.vscode-server/data/Machine/.devport-<commit>`. If several containers on the
+same host bind-mount the same `~/.vscode-server` (typical when your home
+directory is mounted into every container you attach to), they all share that
+file and the last server to start overwrites the port. The next time a window
+attached to *another* container reloads, the extension finds its server
+"already running", reads the wrong port, gets `ECONNREFUSED` on every forwarded
+connection, and the window fails with:
+
+```
+Failed to connect to the remote extension host server (Error: WebSocket close with status code 1006)
+```
+
+Reloading never helps; only killing the server in the container (e.g.
+`docker restart`) does, which then breaks the other container the same way.
+
+The `patch-vscode` command makes the file name container-specific by appending
+the container's mount namespace id, keeping it in the same directory. The first
+reload of each window after patching restarts the server inside its container
+once (the old, unsuffixed port file is ignored). `unpatch-vscode` restores the
+original file.
 
 ### Recommended VS Code Configuration
 
