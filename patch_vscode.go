@@ -130,7 +130,8 @@ var patchSpecs = []patchSpec{
 	},
 }
 
-// devContainersPatchSpecs match the Dev Containers extension (0.469.0).
+// devContainersPatchSpecs match the Dev Containers extension (0.469.0 to
+// 0.475.0).
 //
 // The extension records the port of the VS Code Server it starts inside a
 // container in ~/.vscode-server/data/Machine/.devport-<commit>. When several
@@ -147,9 +148,14 @@ var patchSpecs = []patchSpec{
 // its lifetime) to the file name, keeping it in the same directory so no
 // assumption is made about /tmp or any other location.
 var devContainersPatchSpecs = []patchSpec{
+	// The prefix deliberately avoids the minified identifiers of the
+	// path.join call (e.g. Ne/Mi/O/k in 0.469.0 became Le/Bi/M/T in
+	// 0.475.0). The ".connection-token-" declaration right before it ends
+	// the same way but is followed by "`),", so the suffix keeps the match
+	// unique to the .devport- path.
 	{
 		filename:     extensionJS,
-		searchPrefix: "O=Ne.posix.join(Mi(t),`.devport-${b}${k===\"stable\"?\"\":`-${k}`}${e.web?\"-web\":\"\"}",
+		searchPrefix: "${e.web?\"-web\":\"\"}",
 		searchSuffix: "`);if(w.length)",
 		oldValue:     "${t.legacy?\"-legacy\":\"\"}",
 		newValue:     "${t.legacy?\"-legacy\":\"\"}${m?`-${m.replace(/\\D/g,\"\")}`:\"\"}",
